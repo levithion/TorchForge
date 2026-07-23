@@ -1,0 +1,93 @@
+{
+  "artifact_dir": "/Users/shshank/Documents/Project/TorchForge/temp_assets/1708-05031v2-45177d4c9b98",
+  "artifacts": {
+    "embedded_images": [
+      {
+        "page": 1,
+        "path": "images/page-001-img-01-xref-85.png",
+        "xref": 85
+      }
+    ],
+    "generated_code": "/Users/shshank/Documents/Project/TorchForge/output_code/1708_05031v2_45177d4c9b98.py",
+    "nougat_text": null,
+    "pymupdf_text": "pymupdf.md",
+    "rendered_pages": [
+      {
+        "dpi": 150,
+        "page": 1,
+        "path": "pages/page-001.png"
+      },
+      {
+        "dpi": 150,
+        "page": 2,
+        "path": "pages/page-002.png"
+      },
+      {
+        "dpi": 150,
+        "page": 3,
+        "path": "pages/page-003.png"
+      },
+      {
+        "dpi": 150,
+        "page": 4,
+        "path": "pages/page-004.png"
+      },
+      {
+        "dpi": 150,
+        "page": 5,
+        "path": "pages/page-005.png"
+      },
+      {
+        "dpi": 150,
+        "page": 6,
+        "path": "pages/page-006.png"
+      },
+      {
+        "dpi": 150,
+        "page": 7,
+        "path": "pages/page-007.png"
+      },
+      {
+        "dpi": 150,
+        "page": 8,
+        "path": "pages/page-008.png"
+      }
+    ],
+    "topology": "topology.json"
+  },
+  "compilation": {
+    "assumptions": [],
+    "class_name": "NCF",
+    "model": "qwen2.5-coder:3b",
+    "source_sha256": "2ed6b9d00b3e5bb9753446fe5773259e9dae06385acf18b714e32f4c7791b54d"
+  },
+  "errors": [],
+  "metadata": {
+    "creationDate": "D:20170829012359Z",
+    "creator": "LaTeX with hyperref package",
+    "format": "PDF 1.5",
+    "modDate": "D:20170829012359Z",
+    "producer": "pdfTeX-1.40.17"
+  },
+  "ocr_provider": "pymupdf",
+  "page_count": 10,
+  "source_path": "/Users/shshank/Documents/Project/TorchForge/input_papers/1708.05031v2.pdf",
+  "source_sha256": "45177d4c9b98cc30eef4c8fdf3795ba790192e85a0c350ca597666342bb85b7d",
+  "status": "completed",
+  "vision": {
+    "image_count": 8,
+    "model": "llava",
+    "schema_version": "1.0",
+    "source_images": [
+      "pages/page-001.png",
+      "pages/page-002.png",
+      "pages/page-003.png",
+      "pages/page-004.png",
+      "pages/page-005.png",
+      "pages/page-006.png",
+      "pages/page-007.png",
+      "pages/page-008.png"
+    ]
+  },
+  "warnings": []
+}

@@ -1,0 +1,169 @@
+{
+  "schema_version": "1.0",
+  "architecture_name": "BERT Base Encoder",
+  "task": "bidirectional language representation pre-training and fine-tuning",
+  "inputs": [
+    {
+      "name": "input_ids",
+      "shape": [
+        null,
+        null
+      ],
+      "dtype": "int64",
+      "description": "WordPiece token IDs with [CLS] and [SEP] tokens."
+    },
+    {
+      "name": "attention_mask",
+      "shape": [
+        null,
+        null
+      ],
+      "dtype": "int64",
+      "description": "One for valid tokens and zero for padding."
+    },
+    {
+      "name": "token_type_ids",
+      "shape": [
+        null,
+        null
+      ],
+      "dtype": "int64",
+      "description": "Sentence A/B segment IDs."
+    }
+  ],
+  "layers": [
+    {
+      "id": "embeddings",
+      "layer_type": "bert_embeddings",
+      "inputs": [
+        "input_ids",
+        "token_type_ids"
+      ],
+      "input_shape": [
+        null,
+        null
+      ],
+      "output_shape": [
+        null,
+        null,
+        768
+      ],
+      "parameters": {
+        "vocab_size": 30522,
+        "hidden_size": 768,
+        "max_position_embeddings": 512,
+        "type_vocab_size": 2,
+        "dropout": 0.1,
+        "layer_norm_eps": 1e-12,
+        "components": [
+          "word_embeddings",
+          "position_embeddings",
+          "token_type_embeddings"
+        ]
+      },
+      "description": "Sums learned token, segment, and absolute-position embeddings, then applies LayerNorm and dropout.",
+      "confidence": 0.99
+    },
+    {
+      "id": "encoder_stack",
+      "layer_type": "bidirectional_transformer_encoder",
+      "inputs": [
+        "embeddings",
+        "attention_mask"
+      ],
+      "input_shape": [
+        null,
+        null,
+        768
+      ],
+      "output_shape": [
+        null,
+        null,
+        768
+      ],
+      "parameters": {
+        "num_layers": 12,
+        "hidden_size": 768,
+        "num_heads": 12,
+        "intermediate_size": 3072,
+        "activation": "gelu",
+        "hidden_dropout_prob": 0.1,
+        "attention_probs_dropout_prob": 0.1,
+        "layer_norm_eps": 1e-12,
+        "attention_direction": "bidirectional"
+      },
+      "description": "Twelve post-normalized bidirectional Transformer encoder blocks with residual connections.",
+      "confidence": 0.99
+    },
+    {
+      "id": "pooler",
+      "layer_type": "cls_pooler",
+      "inputs": [
+        "encoder_stack"
+      ],
+      "input_shape": [
+        null,
+        null,
+        768
+      ],
+      "output_shape": [
+        null,
+        768
+      ],
+      "parameters": {
+        "hidden_size": 768,
+        "activation": "tanh"
+      },
+      "description": "Projects the final [CLS] representation through a dense layer and tanh.",
+      "confidence": 0.98
+    }
+  ],
+  "connections": [
+    {
+      "source": "embeddings",
+      "target": "encoder_stack",
+      "kind": "sequential",
+      "description": "Embedding sequence enters the encoder stack."
+    },
+    {
+      "source": "encoder_stack",
+      "target": "pooler",
+      "kind": "sequential",
+      "description": "The first final-layer token feeds the pooler."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "last_hidden_state",
+      "shape": [
+        null,
+        null,
+        768
+      ],
+      "dtype": "float32",
+      "description": "Contextual representation for every input token."
+    },
+    {
+      "name": "pooler_output",
+      "shape": [
+        null,
+        768
+      ],
+      "dtype": "float32",
+      "description": "Tanh-pooled final [CLS] representation."
+    }
+  ],
+  "assumptions": [
+    "The paper reports BERT Base and BERT Large; TorchForge selected BERT Base (L=12, H=768, A=12) for this artifact.",
+    "The 30,522-token vocabulary and checkpoint-compatible defaults follow the canonical BERT Base uncased configuration.",
+    "Pre-training MLM/NSP and downstream task heads are outside the base encoder."
+  ],
+  "source_images": [
+    "page-003.png",
+    "page-005.png",
+    "page-013.png",
+    "page-015.png",
+    "page-016.png"
+  ],
+  "overall_confidence": 0.98
+}
