@@ -1,138 +1,256 @@
 # TorchForge
 
-TorchForge is a local pipeline for turning machine-learning research papers into
-structured artifacts that later stages can use to generate and validate PyTorch
-implementations. Phases 1–4 provide deterministic PDF ingestion, strict local
-vision parsing, local PyTorch source generation, and portable PyTorch runtime
-validation for transformer and NLP papers.
+[![CI](https://github.com/levithion/TorchForge/actions/workflows/ci.yml/badge.svg)](https://github.com/levithion/TorchForge/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Local AI](https://img.shields.io/badge/AI-Ollama-111111)](https://ollama.com/)
 
-TorchForge Studio adds a responsive browser workspace for uploading papers,
-running all four phases, monitoring the local runtime, and inspecting generated
-artifacts without invoking each phase manually.
+**Turn transformer and NLP research papers into structured, executable, and
+validated PyTorch modules.**
 
-## Phase 1 capabilities
+TorchForge is a local-first research engineering pipeline. It extracts text and
+figures from a PDF, converts architecture evidence into a strict topology,
+generates an importable `torch.nn.Module`, and executes architecture-aware
+validation on CPU, NVIDIA CUDA, or Apple MPS.
 
-- Extracts page text and document metadata with PyMuPDF.
-- Preserves embedded images without recompressing them.
-- Renders likely figure pages at 150 DPI, including pages whose diagrams are
-  vector graphics.
-- Optionally runs Nougat to preserve equations and tables as `.mmd` markup.
-- Watches `input_papers/` for stable, newly created PDFs and deduplicates
-  repeated filesystem events by content hash.
-- Writes a manifest that later pipeline stages can consume without guessing
-  filenames.
+TorchForge Studio provides a browser workspace for the same pipeline: upload a
+paper, run each phase, monitor local model availability, and inspect the text,
+topology, generated code, manifest, and validation report.
 
-## Phase 2 capabilities
+![TorchForge paper-to-PyTorch workspace](frontend/public/og.png)
 
-- Sends extracted figure-page images to a configurable local Ollama vision model.
-- Uses Ollama structured outputs and a strict Pydantic JSON Schema.
-- Validates unique layer IDs, layer inputs, connection endpoints, confidence
-  bounds, collection-size limits, and unknown fields before accepting model output.
-- Uses an unambiguous paper title to select a certified topology profile when one
-  exists. BERT Base is normalized to a complete encoder graph with inputs, outputs,
-  embedding components, connections, shapes, and paper-reported hyperparameters.
-- Caps confidence for incomplete unknown topologies instead of preserving an
-  unsupported high-confidence model score.
-- Explicitly prevents prediction heads from being mislabeled as decoder stacks.
-- Records layers, tensor shapes, parameters, sequential edges, residual/skip
-  connections, assumptions, and confidence values in `topology.json`.
-- Updates the Phase 1 manifest with the model, source images, image count, and
-  schema version used for the vision run.
+> [!IMPORTANT]
+> TorchForge generates and executes Python code. Its AST checks reject several
+> dangerous or invalid patterns, but they are not a security sandbox. Use trusted
+> papers and local models, review generated source, and run untrusted experiments
+> inside an isolated account, container, or virtual machine.
 
-## Phase 3 capabilities
+## Table of contents
 
-- Combines `topology.json` with Nougat markup or PyMuPDF text and sends it to a
-  configurable local Ollama coding model.
-- Uses a structured response while saving only importable Python source.
-- Requires exactly one `nn.Module` with `__init__` and `forward`.
-- Statically rejects syntax errors, executable top-level statements, CUDA usage,
-  class-name mismatches, and module attributes used before initialization.
-- Writes generated source to `output_code/` and records its class, model,
-  assumptions, and SHA-256 digest in the manifest.
+- [What TorchForge does](#what-torchforge-does)
+- [Pipeline architecture](#pipeline-architecture)
+- [Current support level](#current-support-level)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Using TorchForge Studio](#using-torchforge-studio)
+- [Using the CLI](#using-the-cli)
+- [Phase details](#phase-details)
+- [Artifacts and manifest](#artifacts-and-manifest)
+- [Validation model](#validation-model)
+- [Configuration](#configuration)
+- [HTTP API](#http-api)
+- [Testing](#testing)
+- [Repository layout](#repository-layout)
+- [Troubleshooting](#troubleshooting)
+- [Limitations](#limitations)
+- [Contributing](#contributing)
+- [License](#license)
 
-## Phase 4 capabilities
+## What TorchForge does
 
-- Dynamically imports the Phase 3 module and verifies its generated class is an
-  `nn.Module`.
-- Infers common required constructor arguments and dummy input tensors from
-  `topology.json`.
-- Automatically selects NVIDIA CUDA, Apple Silicon MPS, or the universally
-  available CPU fallback, executes `forward` under `torch.no_grad()`, synchronizes
-  accelerators, and records input/output shapes.
-- Captures complete runtime tracebacks and gives them to the Phase 3 coding model
-  for up to two repair attempts.
-- Applies strict architecture profiles when a paper is recognized. The BERT Base
-  profile verifies its three-part embeddings, 12 encoder layers, 12 attention
-  heads, 3072-wide GELU feed-forward blocks, batch semantics, attention-mask
-  interface, LayerNorm configuration, exact parameter count, pooler outputs,
-  finite values, gradient flow, batch independence, and checkpoint adapter.
-- The optional reference suite loads identical Hugging Face `BertModel` weights
-  into TorchForge and checks numerical parity for masked and segmented batches.
-- Treats architecture-conformance failures exactly like runtime failures and sends
-  the failed checks to the repair model. A toy Transformer cannot pass as BERT.
-- Writes `validation.json` and a validation summary into the manifest. A clean
-  first run reports `completed`; a corrected run reports `repaired`; exhausted
-  attempts report `failed`.
+TorchForge is designed around a simple question:
 
-## Requirements and setup
+> Can a paper be converted into a model implementation whose assumptions,
+> structure, code, and runtime evidence remain inspectable?
 
-- Windows, macOS, or Linux on a platform supported by Python, PyMuPDF, and PyTorch
-- [`uv`](https://docs.astral.sh/uv/)
-- Python 3.11 (installed automatically by `uv` when needed)
-- [Ollama](https://ollama.com/) with a vision model for Phase 2
-- An Ollama coding model for Phase 3
-- A GPU is optional. Phase 4 falls back to CPU automatically.
+It answers that question with four explicit phases:
+
+1. **Extract** — deterministically recover text, metadata, embedded images, and
+   high-resolution candidate figure pages.
+2. **Parse** — convert paper evidence into a validated architecture graph with
+   named inputs, layers, parameters, connections, outputs, assumptions, and
+   confidence.
+3. **Compile** — create one device-agnostic PyTorch module and reject invalid or
+   suspicious source before it is imported.
+4. **Validate** — instantiate the module, run representative tensors, check
+   outputs and gradients, and repair runtime failures when permitted.
+
+Each phase writes durable artifacts. Later phases consume the manifest rather
+than guessing filenames or relying on hidden application state.
+
+## Pipeline architecture
+
+```mermaid
+flowchart LR
+    PDF[Research paper PDF]
+    P1[Phase 1<br/>PyMuPDF + optional Nougat]
+    TXT[Text, metadata,<br/>images, rendered pages]
+    P2[Phase 2<br/>Certified profile or Ollama vision]
+    TOP[Validated topology.json]
+    P3[Phase 3<br/>Reference compiler or Ollama coder]
+    CODE[Importable nn.Module]
+    P4[Phase 4<br/>CPU / CUDA / MPS validator]
+    REPORT[validation.json]
+
+    PDF --> P1 --> TXT --> P2 --> TOP --> P3 --> CODE --> P4 --> REPORT
+    P4 -. runtime traceback .-> P3
+```
+
+The browser workspace and CLI call the same Python services:
+
+```text
+TorchForge Studio ─┐
+                   ├─> FastAPI / CLI ─> extraction ─> topology ─> compiler ─> validator
+torchforge CLI ────┘
+```
+
+## Current support level
+
+| Architecture | Topology | Code generation | Validation guarantee |
+|---|---|---|---|
+| **BERT Base encoder** | Certified profile | Deterministic reference implementation | Structural, semantic, gradient, device, parameter-count, and Hugging Face parity checks |
+| Other transformer/NLP papers | Ollama vision interpretation | Ollama code generation | Schema, confidence, static-source, and portable runtime checks |
+
+### Certified BERT Base behavior
+
+When the original BERT paper is identified unambiguously, TorchForge creates a
+complete BERT Base topology instead of trusting a small vision model to
+reconstruct well-known details. The profile includes:
+
+- token, position, and token-type embeddings;
+- hidden size `768`;
+- `12` encoder layers;
+- `12` self-attention heads;
+- intermediate size `3072`;
+- GELU activation;
+- post-normalization residual blocks;
+- attention masks and segment IDs;
+- the final hidden state and tanh pooler output;
+- `109,482,240` parameters for the encoder with pooler; and
+- a `load_huggingface_state_dict()` adapter.
+
+The optional reference suite maps the same weights into Hugging Face
+`BertModel` and TorchForge BERT, then compares masked and segmented forward
+outputs numerically.
+
+### Unknown architecture safety gate
+
+Unknown architectures remain model interpretations. TorchForge:
+
+- validates topology structure with Pydantic;
+- limits pathological layer and connection expansion;
+- recalibrates confidence when graph details are missing;
+- requires an overall topology confidence of at least `0.60`; and
+- blocks Phase 3 when the topology is incomplete or low-confidence.
+
+This prevents a plausible-looking Python file from being treated as success when
+Phase 2 did not produce an implementation-ready graph.
+
+## Requirements
+
+### Required
+
+| Component | Version or guidance | Used for |
+|---|---|---|
+| Python | `>=3.11,<3.13` | Pipeline, API, extraction, validation |
+| [`uv`](https://docs.astral.sh/uv/) | Current stable release | Python and lockfile management |
+| Node.js | `>=22.13.0` | TorchForge Studio |
+| npm | Bundled with Node.js | Frontend installation and build |
+| Ollama | Current release | Unknown-paper vision parsing and code generation |
+
+### Default local models
+
+```bash
+ollama pull llava
+ollama pull qwen2.5-coder:3b
+```
+
+- `llava` is the default vision model.
+- `qwen2.5-coder:3b` is the default coding model.
+- Certified profiles such as BERT Base do not require Ollama for their
+  deterministic Phase 2 and Phase 3 paths.
+
+### Hardware
+
+- A GPU is optional.
+- Runtime validation chooses CUDA first, then Apple MPS, then CPU.
+- CPU-only execution works but local vision and code generation may be slow.
+- Model memory requirements depend on the selected Ollama model and context
+  window.
+
+### Optional Nougat OCR
+
+Nougat is intentionally excluded from the base dependency set because its model
+and ML dependencies are large. When a `nougat` executable is available,
+TorchForge invokes:
+
+```bash
+nougat paper.pdf -o output_directory
+```
+
+If Nougat is missing, fails, or times out, valid PyMuPDF extraction is preserved
+and the manifest records a warning.
+
+## Quick start
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/levithion/TorchForge.git
+cd TorchForge
+```
+
+### 2. Install the Python environment
 
 ```bash
 uv python install 3.11
 uv sync --extra dev
 ```
 
-For independent BERT parity verification:
+For the independent BERT reference tests:
 
 ```bash
 uv sync --extra dev --extra reference
-uv run --extra reference pytest tests/test_bert_reference.py
 ```
 
-Nougat is optional and deliberately excluded from the base environment because
-of its model size and ML dependencies. To enable equation OCR, install
-`nougat-ocr` in a compatible separate environment or add its `nougat` executable
-to `PATH`. TorchForge invokes the upstream interface:
+### 3. Prepare Ollama
+
+Start Ollama according to your operating system, then install the defaults:
 
 ```bash
-nougat paper.pdf -o output_directory
-```
-
-Without Nougat, extraction still succeeds and the manifest status is
-`completed_with_warnings`.
-
-For diagram parsing, start Ollama and install the default README-compatible model:
-
-```bash
-ollama serve
 ollama pull llava
-```
-
-Another vision-capable model can be selected with `--model`.
-
-Install the default coding model selected for a 16 GB Apple Silicon Mac:
-
-```bash
 ollama pull qwen2.5-coder:3b
 ```
 
-## Usage
+Verify that Ollama is reachable:
 
-### Browser workspace
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
 
-Start the local TorchForge engine:
+### 4. Extract a paper
+
+```bash
+uv run torchforge extract path/to/paper.pdf --no-nougat
+```
+
+The command prints a JSON result containing the collision-safe artifact
+directory. Use that directory in later commands:
+
+```bash
+uv run torchforge parse temp_assets/<paper-name-and-hash>
+uv run torchforge compile temp_assets/<paper-name-and-hash>
+uv run torchforge validate temp_assets/<paper-name-and-hash>
+```
+
+## Using TorchForge Studio
+
+TorchForge Studio is a frontend for the local engine. The frontend does not run
+PyTorch or Ollama in the browser.
+
+### Start the backend
+
+From the repository root:
 
 ```bash
 uv run torchforge serve
 ```
 
-In a second terminal, start the frontend:
+The API listens on `http://127.0.0.1:8000`.
+
+### Start the frontend
+
+In a second terminal:
 
 ```bash
 cd frontend
@@ -140,156 +258,547 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`. The workspace supports PDF upload, phase-by-phase
-execution, paper history, environment health, and text/topology/code/validation
-artifact viewing. The local API listens on `http://127.0.0.1:8000` by default.
-Set `NEXT_PUBLIC_TORCHFORGE_API_URL` in `frontend/.env.local` when the engine is
-hosted elsewhere, and list the frontend origin in
-`TORCHFORGE_ALLOWED_ORIGINS` for cross-origin access.
+Open [http://localhost:3000](http://localhost:3000).
 
-### Command line
+The workspace supports:
 
-Extract one PDF:
+- drag-and-drop PDF upload;
+- extraction, parsing, compilation, and validation actions;
+- local Ollama and device health;
+- paper history;
+- stage progress and repair status;
+- artifact inspection; and
+- architecture-profile and output-shape summaries.
+
+### Use a different backend URL
+
+Copy the example environment file:
+
+```bash
+cd frontend
+cp .env.example .env.local
+```
+
+Then edit:
+
+```dotenv
+NEXT_PUBLIC_TORCHFORGE_API_URL=http://127.0.0.1:8000
+```
+
+When the frontend uses another origin, add it to
+`TORCHFORGE_ALLOWED_ORIGINS` on the backend.
+
+## Using the CLI
+
+```text
+torchforge [--verbose] {extract,watch,parse,compile,validate,serve}
+```
+
+### Extract one PDF
 
 ```bash
 uv run torchforge extract path/to/paper.pdf
 ```
 
-Skip the optional Nougat check:
+Skip Nougat discovery:
 
 ```bash
 uv run torchforge extract path/to/paper.pdf --no-nougat
 ```
 
-Watch the default input directory:
+Choose another artifact root:
+
+```bash
+uv run torchforge extract path/to/paper.pdf \
+  --assets-root /path/to/assets
+```
+
+### Watch a directory
 
 ```bash
 uv run torchforge watch
 ```
 
-Parse diagrams from a completed Phase 1 artifact directory:
+The watcher:
+
+- monitors `input_papers/` by default;
+- ignores non-PDF files;
+- waits for copied files to stop changing;
+- deduplicates repeated events by content hash; and
+- logs invalid PDFs without stopping.
+
+Example with explicit paths:
+
+```bash
+uv run torchforge watch \
+  --input-dir input_papers \
+  --assets-root temp_assets \
+  --stability-timeout 60 \
+  --no-nougat
+```
+
+Press `Ctrl-C` to stop cleanly.
+
+### Parse architecture diagrams
 
 ```bash
 uv run torchforge parse temp_assets/<paper-name-and-hash>
 ```
 
-Compile a completed Phase 2 artifact into PyTorch source:
+Use another vision model:
+
+```bash
+uv run torchforge parse temp_assets/<paper-name-and-hash> \
+  --model gemma3 \
+  --ollama-url http://127.0.0.1:11434 \
+  --context-window 8192 \
+  --max-images 8
+```
+
+### Generate a PyTorch module
 
 ```bash
 uv run torchforge compile temp_assets/<paper-name-and-hash>
 ```
 
-Validate a completed Phase 3 artifact on the best available device:
+Tune bounded generation:
+
+```bash
+uv run torchforge compile temp_assets/<paper-name-and-hash> \
+  --model qwen2.5-coder:3b \
+  --max-text-chars 6000 \
+  --context-window 8192 \
+  --max-output-tokens 4096
+```
+
+### Validate and repair
 
 ```bash
 uv run torchforge validate temp_assets/<paper-name-and-hash>
 ```
 
-Override automatic selection when needed:
+Choose a device explicitly:
 
 ```bash
 uv run torchforge validate temp_assets/<paper-name-and-hash> --device cpu
-# Other explicit choices: --device cuda or --device mps
+uv run torchforge validate temp_assets/<paper-name-and-hash> --device mps
+uv run torchforge validate temp_assets/<paper-name-and-hash> --device cuda
 ```
 
-Use a different local model or endpoint:
+Disable automatic repair:
 
 ```bash
-uv run torchforge parse temp_assets/<paper-name-and-hash> \
-  --model gemma3 \
-  --ollama-url http://127.0.0.1:11434
+uv run torchforge validate temp_assets/<paper-name-and-hash> --max-repairs 0
 ```
 
-Useful options:
+### Run the API on another address
 
-```text
---assets-root PATH         artifact root (default: temp_assets)
---nougat-timeout SECONDS  Nougat timeout (default: 1200)
---input-dir PATH           watched directory (default: input_papers)
---stability-timeout SEC    maximum wait for a copied PDF to stabilize
---model NAME               Ollama vision model (default: llava)
---ollama-url URL           Ollama server (default: http://127.0.0.1:11434)
---timeout SECONDS          vision request timeout (default: 300)
---max-images COUNT         maximum candidate pages sent (default: 8)
---output-dir PATH          generated source directory (default: output_code)
---max-text-chars COUNT     maximum paper text supplied (default: 6000)
---context-window TOKENS    Ollama context size (default: 8192)
---max-output-tokens COUNT  maximum generated code response (default: 4096)
---device DEVICE            auto, cuda, mps, or cpu (default: auto)
---max-repairs COUNT        runtime-driven recompilations (default: 2)
+```bash
+uv run torchforge serve --host 127.0.0.1 --port 8000
 ```
 
-Press `Ctrl-C` to stop the watcher cleanly. `python main.py` accepts the same
-subcommands after the project has been installed with `uv sync`.
+`python main.py` accepts the same subcommands after `uv sync`.
 
-## Artifacts
+## Phase details
 
-Each paper is stored under a collision-safe path such as:
+### Phase 1 — deterministic extraction
+
+Implementation: [`src/torchforge/extractor.py`](src/torchforge/extractor.py)
+
+- validates file existence, extension, PDF content, encryption, and page count;
+- calculates the full source SHA-256;
+- stores artifacts under `<safe-name>-<hash-prefix>`;
+- extracts page text and PDF metadata with PyMuPDF;
+- saves embedded images in their original encoded format;
+- renders likely figure pages at 150 DPI;
+- preserves vector diagrams through page rendering;
+- optionally retains Nougat `.mmd` output; and
+- cleans stale managed artifacts when the same PDF is reprocessed.
+
+Successful fallback extraction reports `completed_with_warnings`; corrupt,
+encrypted, empty, or unreadable PDFs report `failed`.
+
+### Phase 2 — topology parsing
+
+Implementation:
+[`src/torchforge/vision_parser.py`](src/torchforge/vision_parser.py) and
+[`src/torchforge/topology.py`](src/torchforge/topology.py)
+
+- selects rendered pages with actual figure captions when possible;
+- sends at most eight candidate images by default;
+- combines paper identity, text evidence, and diagrams;
+- requires structured output matching `NetworkTopology`;
+- validates IDs, graph endpoints, shapes, parameters, assumptions, and bounds;
+- uses certified profiles when paper identity is unambiguous;
+- caps confidence for incomplete unknown graphs; and
+- marks the manifest topology as usable only when confidence is at least `0.60`.
+
+### Phase 3 — guarded compilation
+
+Implementation: [`src/torchforge/compiler.py`](src/torchforge/compiler.py)
+
+- consumes `topology.json` and extracted paper text;
+- refuses low-confidence or invalid Phase 2 topologies;
+- uses deterministic source for certified profiles;
+- uses Ollama structured generation for other architectures;
+- requires exactly one root `nn.Module`;
+- strips Markdown fences and executable `__main__` examples;
+- rejects syntax errors and top-level execution;
+- rejects hard-coded CUDA behavior;
+- checks `super().__init__()`, `forward`, and initialized module attributes; and
+- records the source SHA-256, model, class, and assumptions.
+
+Generated files are written to `output_code/`.
+
+### Phase 4 — runtime and conformance validation
+
+Implementation: [`src/torchforge/validator.py`](src/torchforge/validator.py)
+
+- safely resolves the generated class from the manifest;
+- infers common constructor arguments from topology parameters;
+- creates representative integer, mask, or floating-point tensors;
+- selects CUDA, MPS, or CPU;
+- executes `forward`;
+- verifies tensor outputs and finite values;
+- checks backward gradient flow for certified profiles;
+- records input and output shapes;
+- captures complete tracebacks; and
+- can send bounded runtime feedback to Phase 3 for repair.
+
+For BERT Base, Phase 4 additionally checks:
+
+- forward arguments;
+- all three embedding types;
+- embedding normalization and dropout;
+- LayerNorm epsilon;
+- encoder depth;
+- hidden size and attention heads;
+- feed-forward width and GELU;
+- dropout configuration;
+- batch-first semantics;
+- pooler structure;
+- exact parameter count;
+- Hugging Face checkpoint adapter;
+- output contracts;
+- finite outputs;
+- gradient flow; and
+- batch independence.
+
+## Artifacts and manifest
+
+### Artifact directory
 
 ```text
 temp_assets/attention-is-all-you-need-a1b2c3d4e5f6/
 ├── manifest.json
 ├── pymupdf.md
-├── nougat.mmd             # only when Nougat succeeds
-├── topology.json           # after successful Phase 2 parsing
-├── validation.json         # after a Phase 4 validation attempt
-├── images/                # embedded raster images
-└── pages/                 # likely figure pages rendered as PNG
+├── nougat.mmd              # only when Nougat succeeds
+├── topology.json           # after Phase 2
+├── validation.json         # after Phase 4
+├── images/
+│   └── page-003-img-01-xref-42.jpeg
+└── pages/
+    └── page-003.png
 ```
 
-`manifest.json` records the source SHA-256, extraction status, page count,
-metadata, OCR provider, relative artifact paths, warnings, and errors. The three
-terminal statuses are `completed`, `completed_with_warnings`, and `failed`.
-After Phase 2 succeeds, its `vision` section identifies the Ollama model and
-exact source images used. The original extraction status is left unchanged.
-After Phase 3 succeeds, `artifacts.generated_code` points to the generated `.py`
-file and `compilation` records the coding model, class, assumptions, and digest.
-After Phase 4 runs, `artifacts.validation_report` points to the detailed attempt
-history and the manifest's `validation` section summarizes device, status, attempt
-count, and output shapes.
+Generated Python source is written separately:
 
-## Tests
+```text
+output_code/
+└── attention_is_all_you_need_a1b2c3d4e5f6.py
+```
+
+### Manifest lifecycle
+
+`manifest.json` is the contract between phases. It records:
+
+- source path and SHA-256;
+- extraction status and page count;
+- PDF metadata;
+- OCR provider;
+- artifact paths;
+- warnings and errors;
+- selected topology source images;
+- topology model, confidence, and usability;
+- generated class, compiler, assumptions, and source digest; and
+- validation device, status, attempts, and output shapes.
+
+Primary statuses:
+
+| Status | Meaning |
+|---|---|
+| `completed` | Stage succeeded without repair or fallback warnings |
+| `completed_with_warnings` | Extraction succeeded using a fallback |
+| `repaired` | Initial generated code failed but a later repair passed |
+| `failed` | The stage could not produce a usable result |
+
+## Validation model
+
+TorchForge deliberately separates different meanings of “works”:
+
+| Level | Evidence |
+|---|---|
+| Schema-valid | Topology or response satisfies the strict data model |
+| Statically valid | Source parses and meets the minimum `nn.Module` contract |
+| Runtime-valid | Representative tensors execute and return tensor outputs |
+| Structurally conformant | A certified profile matches required components and dimensions |
+| Reference-verified | Identical imported weights produce matching reference outputs |
+
+Passing a forward shape test alone does **not** prove paper fidelity. Strict
+structural and reference claims are made only for certified profiles.
+
+## Configuration
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TORCHFORGE_ROOT` | Current working directory | Backend project and artifact root |
+| `TORCHFORGE_ALLOWED_ORIGINS` | Local frontend plus deployed Studio origin | Comma-separated API CORS origins |
+| `NEXT_PUBLIC_TORCHFORGE_API_URL` | `http://127.0.0.1:8000` | Frontend API base URL |
+
+### Important CLI defaults
+
+| Option | Default |
+|---|---|
+| Assets directory | `temp_assets/` |
+| Watched input directory | `input_papers/` |
+| Generated-code directory | `output_code/` |
+| Vision model | `llava` |
+| Coding model | `qwen2.5-coder:3b` |
+| Ollama URL | `http://127.0.0.1:11434` |
+| Vision timeout | `300` seconds |
+| Compiler timeout | `600` seconds |
+| Nougat timeout | `1200` seconds |
+| Context window | `8192` tokens |
+| Maximum code output | `4096` tokens |
+| Maximum supplied paper text | `6000` characters |
+| Maximum candidate images | `8` |
+| Maximum repairs | `2` |
+
+Run any command with `--help` for its complete interface:
 
 ```bash
-uv run pytest
+uv run torchforge validate --help
 ```
 
-The suite covers text/image/page extraction, hash-based artifact isolation,
-Nougat fallbacks, watcher behavior, the strict topology schema, Ollama request
-construction and error handling, path containment, manifest updates, and CLI
-exit codes. Phase 3 tests also cover structured compiler requests, Python AST
-validation, device independence, output writing, and compilation metadata. Phase
-4 tests cover constructor inference, dummy forward execution, tensor output
-shapes, traceback-driven repair, report persistence, failure status, and CLI exit
-codes.
+## HTTP API
 
-## Current limitations
+The local FastAPI service exposes the frontend workflow.
 
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Device, Ollama, and default-model health |
+| `GET` | `/api/papers` | List available paper artifacts |
+| `GET` | `/api/papers/{paper_id}` | Read one paper summary |
+| `POST` | `/api/papers` | Upload and extract a PDF |
+| `POST` | `/api/papers/{paper_id}/parse` | Run Phase 2 |
+| `POST` | `/api/papers/{paper_id}/compile` | Run Phase 3 |
+| `POST` | `/api/papers/{paper_id}/validate` | Run Phase 4 |
+| `GET` | `/api/papers/{paper_id}/artifacts/{name}` | Read an allowed artifact |
+
+Uploads are limited to 100 MiB. Filenames and artifact paths are normalized and
+checked to remain within configured project directories.
+
+## Testing
+
+### Complete Python and reference suite
+
+```bash
+uv sync --extra dev --extra reference
+uv run --extra reference pytest -q
+```
+
+### BERT parity only
+
+```bash
+uv run --extra reference pytest tests/test_bert_reference.py -q
+```
+
+### Frontend build and tests
+
+```bash
+cd frontend
+npm ci
+npm test
+```
+
+The current suite covers:
+
+- text, metadata, image, and candidate-page extraction;
+- content-hash collision isolation;
+- stale artifact cleanup;
+- Nougat success and fallback paths;
+- watcher stability and deduplication;
+- topology schema and confidence gates;
+- certified BERT topology normalization;
+- Ollama request and error handling;
+- compiler AST validation;
+- low-confidence compilation blocking;
+- CPU/MPS/CUDA selection behavior;
+- forward outputs, gradient flow, repairs, and reports;
+- Hugging Face BERT numerical parity;
+- API behavior; and
+- frontend server rendering and real pipeline interactions.
+
+GitHub Actions runs the Python/reference and frontend jobs on every push to
+`main` and on every pull request.
+
+## Repository layout
+
+```text
+TorchForge/
+├── .github/workflows/ci.yml
+├── frontend/                   # TorchForge Studio
+│   ├── app/
+│   ├── public/
+│   ├── tests/
+│   └── package.json
+├── input_papers/               # watched PDFs; contents ignored by Git
+├── output_code/                # generated modules; contents ignored by Git
+├── src/torchforge/
+│   ├── api.py
+│   ├── architecture_profiles.py
+│   ├── cli.py
+│   ├── compiler.py
+│   ├── extractor.py
+│   ├── models.py
+│   ├── nougat.py
+│   ├── topology.py
+│   ├── validator.py
+│   ├── vision_parser.py
+│   └── watcher.py
+├── temp_assets/                # manifests and artifacts; contents ignored
+├── tests/
+├── main.py
+├── pyproject.toml
+└── uv.lock
+```
+
+## Troubleshooting
+
+### Ollama connection refused
+
+Confirm that Ollama is running:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+Then verify the required models:
+
+```bash
+ollama list
+```
+
+Use `--ollama-url` if Ollama is listening elsewhere.
+
+### Request exceeds the model context size
+
+TorchForge defaults to an `8192`-token context and bounded input/output sizes.
+For a smaller model, reduce one or more limits:
+
+```bash
+uv run torchforge compile temp_assets/<artifact> \
+  --max-text-chars 4000 \
+  --context-window 4096 \
+  --max-output-tokens 2048
+```
+
+Larger generated architectures may require a model with a larger supported
+context window.
+
+### Phase 2 is marked unusable
+
+Inspect `topology.json` and the manifest’s `vision.overall_confidence`.
+TorchForge blocks Phase 3 below `0.60`. Try:
+
+- increasing `--max-images`;
+- selecting a stronger vision model;
+- confirming that architecture diagrams were rendered;
+- checking that the PDF contains real figure captions; or
+- correcting the topology before compilation.
+
+### Validation is slow
+
+Validation may instantiate a large model and run a backward pass. Check the
+selected device in `validation.json`. Use:
+
+```bash
+uv run torchforge validate temp_assets/<artifact> --device cpu
+```
+
+CPU is the most portable option, but not always the fastest.
+
+### Nougat is missing
+
+Either install a compatible `nougat` executable or skip its discovery:
+
+```bash
+uv run torchforge extract paper.pdf --no-nougat
+```
+
+PyMuPDF extraction remains available.
+
+### Frontend cannot reach the backend
+
+Check both services:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:11434/api/tags
+```
+
+Confirm `NEXT_PUBLIC_TORCHFORGE_API_URL` and
+`TORCHFORGE_ALLOWED_ORIGINS` when using different hosts.
+
+## Limitations
+
+- TorchForge targets transformer and NLP papers, not arbitrary neural
+  architectures.
+- BERT Base is currently the only independently certified architecture profile.
+- Other architectures remain vision- and code-model interpretations.
+- Generated weights are random unless a compatible checkpoint is loaded.
+- Tokenizers, datasets, pretraining, and downstream fine-tuning are outside the
+  current pipeline.
+- Runtime success does not prove convergence, task quality, or paper-level
+  numerical equivalence.
 - Password-protected PDFs are rejected.
-- Figure-page detection uses embedded-image presence and `Figure`/`Fig.` caption
-  text; unusual caption styles may be missed.
-- Watcher deduplication is in memory and resets when the process restarts.
-- Nougat can be slow on Apple Silicon and may download model weights on its first
-  run. Its failures never discard valid PyMuPDF artifacts.
-- Phase 2 prioritizes rendered figure pages because they preserve vector diagrams
-  and caption context; embedded images are used when no rendered pages exist.
-- Only the first eight candidate pages are sent by default to bound local model
-  cost. Increase `--max-images` when an architecture spans more pages.
-- Vision output is schema-valid but remains a model interpretation. Low-confidence
-  fields and recorded assumptions should be reviewed before code generation.
-- Phase 4 performs strict structural and semantic checks for recognized profiles
-  (currently BERT Base). Other architectures receive portable runtime validation
-  but are not claimed to exactly reproduce the paper.
-- Constructor and input inference recognizes common transformer/NLP parameter
-  names. Unusual required arguments are rejected explicitly instead of guessed.
-- Automatic device selection prefers CUDA, then MPS, and otherwise uses CPU.
-  Explicitly requesting an unavailable accelerator produces a clear error.
-- CPU execution makes runtime validation portable, but vision parsing and code
-  generation through Ollama can be substantially slower without a GPU and still
-  require enough memory for the selected models.
-- A repair is still model-generated code. Static checks, strict known-architecture
-  profiles, and runtime checks substantially reduce obvious failures but do not
-  prove pretrained-weight equivalence or downstream task quality.
-- The BERT reference suite proves forward-output equivalence after importing the
-  same Hugging Face weights. It does not bundle copyrighted checkpoints, a
-  tokenizer, pretraining data, or downstream fine-tuning.
+- Unusual figure-caption styles can be missed.
+- Watcher deduplication is in-memory and resets with the process.
+- Nougat can be slow and may download model weights on first use.
+- Automatic repair remains model-generated code and requires review.
+- The runtime validator is not an operating-system security sandbox.
+
+## Contributing
+
+Contributions are welcome through focused pull requests.
+
+1. Fork and clone the repository.
+2. Create a branch from `main`.
+3. Keep generated PDFs, artifacts, model outputs, and environments out of Git.
+4. Add or update tests for behavioral changes.
+5. Run:
+
+   ```bash
+   uv run --extra reference pytest -q
+   cd frontend && npm test
+   ```
+
+6. Explain user impact, assumptions, and validation evidence in the pull request.
+
+Useful contribution areas include:
+
+- additional certified architecture profiles;
+- independent checkpoint/output parity suites;
+- better text-grounded topology extraction;
+- stronger generated-code isolation;
+- additional task heads and checkpoint formats;
+- persistent watcher deduplication; and
+- Windows and Linux integration coverage.
+
+## License
+
+No open-source license has been selected yet. Until a license is added, the
+repository remains **all rights reserved** and reuse is not automatically
+granted.
