@@ -104,10 +104,15 @@ def test_paper_management_evidence_and_recoverable_delete(
 
     evidence = client.get(f"/api/papers/{paper_id}/evidence")
     assert evidence.status_code == 200
-    assert evidence.json()["sourceAvailable"]
-    assert client.get(f"/api/papers/{paper_id}/source").headers["content-type"] == (
-        "application/pdf"
-    )
+    evidence_payload = evidence.json()
+    assert evidence_payload["sourceAvailable"]
+    assert evidence_payload["images"] == [
+        {"path": "pages/page-002.png", "page": 2, "kind": "page"},
+        {"path": "pages/page-003.png", "page": 3, "kind": "page"},
+    ]
+    source = client.get(f"/api/papers/{paper_id}/source")
+    assert source.headers["content-type"] == "application/pdf"
+    assert source.headers["content-disposition"].startswith("inline;")
 
     duplicate = client.post(f"/api/papers/{paper_id}/duplicate")
     assert duplicate.status_code == 200
