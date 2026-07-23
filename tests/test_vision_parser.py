@@ -5,8 +5,8 @@ from pathlib import Path
 from urllib.error import URLError
 
 import pytest
-
 from test_topology import valid_topology_payload
+
 from torchforge.topology import NetworkTopology
 from torchforge.vision_parser import (
     OllamaVisionClient,

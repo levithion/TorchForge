@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
 import importlib.util
 import inspect
 import json
-from pathlib import Path
 import sys
 import traceback
+from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
 import torch
+from pydantic import BaseModel, ConfigDict, Field
 from torch import nn
 
 from torchforge.architecture_profiles import ArchitectureProfile, identify_architecture
@@ -412,7 +412,9 @@ def _bert_conformance(
         )
     )
     finite = bool(
-        outputs_valid
+        sequence is not None
+        and pooled is not None
+        and outputs_valid
         and torch.isfinite(sequence).all().item()
         and torch.isfinite(pooled).all().item()
     )
@@ -437,7 +439,7 @@ def _bert_conformance(
         )
     )
 
-    if outputs_valid:
+    if sequence is not None and outputs_valid:
         model.eval()
         with torch.no_grad():
             single_output = model(
@@ -587,6 +589,8 @@ def validate_artifact_directory(
         raise RuntimeValidationError("max_repairs cannot be negative.")
     selected_device = _select_device(device_name)
     selected_device_name = selected_device.type
+    architecture_profile = identify_architecture(topology)
+    architecture_profile_key = architecture_profile.key if architecture_profile else None
 
     attempts: list[ValidationAttempt] = []
     engine = compiler or OllamaCodeCompiler()
@@ -611,11 +615,7 @@ def validate_artifact_directory(
                 constructor_kwargs=kwargs,
                 input_shapes=input_shapes,
                 output_shapes=output_shapes,
-                architecture_profile=(
-                    identify_architecture(topology).key
-                    if identify_architecture(topology)
-                    else None
-                ),
+                architecture_profile=architecture_profile_key,
                 conformance_checks=checks,
                 attempts=attempts,
             )
@@ -636,11 +636,7 @@ def validate_artifact_directory(
                     status=ValidationStatus.FAILED,
                     device=selected_device_name,
                     class_name=class_name,
-                    architecture_profile=(
-                        identify_architecture(topology).key
-                        if identify_architecture(topology)
-                        else None
-                    ),
+                    architecture_profile=architecture_profile_key,
                     attempts=attempts,
                 )
                 _write_report(root, manifest, report)
@@ -664,11 +660,7 @@ def validate_artifact_directory(
                         status=ValidationStatus.FAILED,
                         device=selected_device_name,
                         class_name=class_name,
-                        architecture_profile=(
-                            identify_architecture(topology).key
-                            if identify_architecture(topology)
-                            else None
-                        ),
+                        architecture_profile=architecture_profile_key,
                         attempts=attempts,
                     )
                     _write_report(root, manifest, report)

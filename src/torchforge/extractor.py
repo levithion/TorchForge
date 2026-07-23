@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from pathlib import Path
 import re
 import shutil
 import unicodedata
-from typing import Any
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, cast
 
 import fitz
 
@@ -49,8 +50,12 @@ def _write_manifest(result: ExtractionResult) -> None:
     manifest.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _clean_metadata(metadata: dict[str, Any]) -> dict[str, str]:
-    return {str(key): str(value) for key, value in metadata.items() if value not in (None, "")}
+def _clean_metadata(metadata: Mapping[str, Any] | None) -> dict[str, str]:
+    return {
+        str(key): str(value)
+        for key, value in (metadata or {}).items()
+        if value not in (None, "")
+    }
 
 
 def extract_pdf(
@@ -125,9 +130,10 @@ def extract_pdf(
         text_sections: list[str] = []
         extracted_xrefs: dict[int, str] = {}
 
-        for page_index, page in enumerate(document):
+        for page_index in range(document.page_count):
+            page = document.load_page(page_index)
             page_number = page_index + 1
-            page_text = page.get_text("text").strip()
+            page_text = cast(str, page.get_text("text")).strip()
             text_sections.append(f"# Page {page_number}\n\n{page_text}".rstrip())
             page_images = page.get_images(full=True)
 

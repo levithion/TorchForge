@@ -15,7 +15,6 @@ from torchforge.validator import (
     validate_artifact_directory,
 )
 
-
 TOPOLOGY = {
     "schema_version": "1.0",
     "architecture_name": "Runtime model",

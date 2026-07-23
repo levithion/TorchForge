@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen

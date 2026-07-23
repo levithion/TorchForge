@@ -5,16 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import urlopen
 
+import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
-import torch
 
 from torchforge.compiler import (
     DEFAULT_CODE_MODEL,

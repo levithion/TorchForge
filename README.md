@@ -772,7 +772,8 @@ Confirm `NEXT_PUBLIC_TORCHFORGE_API_URL` and
 
 ## Contributing
 
-Contributions are welcome through focused pull requests.
+Contributions are welcome through focused pull requests. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the complete development workflow.
 
 1. Fork and clone the repository.
 2. Create a branch from `main`.
@@ -781,7 +782,7 @@ Contributions are welcome through focused pull requests.
 5. Run:
 
    ```bash
-   uv run --extra reference pytest -q
+   uv run --extra dev --extra reference pytest -q
    cd frontend && npm test
    ```
 
