@@ -203,6 +203,12 @@ For the independent BERT reference tests:
 uv sync --extra dev --extra reference
 ```
 
+For ONNX export from TorchForge Studio:
+
+```bash
+uv sync --extra export
+```
+
 ### 3. Prepare Ollama
 
 Start Ollama according to your operating system, then install the defaults:
@@ -262,13 +268,21 @@ Open [http://localhost:3000](http://localhost:3000).
 
 The workspace supports:
 
-- drag-and-drop PDF upload;
-- extraction, parsing, compilation, and validation actions;
-- local Ollama and device health;
-- paper history;
-- stage progress and repair status;
-- artifact inspection; and
-- architecture-profile and output-shape summaries.
+- multi-PDF drag-and-drop upload and batch pipeline queues;
+- live job progress, stage logs, cancellation, retry, and run-all actions;
+- editable topology graphs with layer, connection, shape, parameter, and
+  confidence inspection;
+- side-by-side PDF and extracted-figure evidence;
+- a Monaco Python editor with static validation, saved revisions, and code
+  diffs;
+- detailed conformance checks, shapes, tracebacks, and repair history;
+- model, device, context, timeout, image, and repair presets stored locally in
+  the browser;
+- paper rename, tags, archive, recoverable deletion, and duplicated runs;
+- cross-run provenance and generated-code comparison;
+- artifact ZIP, model-card, source, generated-code, and optional ONNX exports;
+  and
+- guided diagnostics for the TorchForge API, Ollama, and missing local models.
 
 ### Use a different backend URL
 
@@ -592,13 +606,27 @@ The local FastAPI service exposes the frontend workflow.
 | `GET` | `/api/papers` | List available paper artifacts |
 | `GET` | `/api/papers/{paper_id}` | Read one paper summary |
 | `POST` | `/api/papers` | Upload and extract a PDF |
+| `PATCH` | `/api/papers/{paper_id}` | Rename, tag, or archive a paper |
+| `DELETE` | `/api/papers/{paper_id}` | Move a paper to recoverable project trash |
+| `POST` | `/api/papers/{paper_id}/duplicate` | Create an independent run |
 | `POST` | `/api/papers/{paper_id}/parse` | Run Phase 2 |
 | `POST` | `/api/papers/{paper_id}/compile` | Run Phase 3 |
 | `POST` | `/api/papers/{paper_id}/validate` | Run Phase 4 |
+| `POST` | `/api/jobs` | Queue one or more configured pipelines |
+| `GET` | `/api/jobs` | Read live job progress and logs |
+| `DELETE` | `/api/jobs/{job_id}` | Request safe job cancellation |
 | `GET` | `/api/papers/{paper_id}/artifacts/{name}` | Read an allowed artifact |
+| `PUT` | `/api/papers/{paper_id}/artifacts/topology` | Validate and save topology edits |
+| `PUT` | `/api/papers/{paper_id}/artifacts/code` | Statically validate and save code edits |
+| `GET` | `/api/papers/{paper_id}/source` | Stream the managed source PDF |
+| `GET` | `/api/papers/{paper_id}/evidence` | List rendered pages and extracted figures |
+| `GET` | `/api/papers/{paper_id}/revisions` | List retained artifact revisions |
+| `GET` | `/api/papers/{paper_id}/exports/{format}` | Export bundle, model card, or ONNX |
 
 Uploads are limited to 100 MiB. Filenames and artifact paths are normalized and
-checked to remain within configured project directories.
+checked to remain within configured project directories. Jobs are intentionally
+local and in-memory; cancellation stops before the next stage after the active
+local operation exits safely.
 
 ## Testing
 
@@ -606,7 +634,7 @@ checked to remain within configured project directories.
 
 ```bash
 uv sync --extra dev --extra reference
-uv run --extra reference pytest -q
+uv run --extra dev --extra reference pytest -q
 ```
 
 ### BERT parity only
