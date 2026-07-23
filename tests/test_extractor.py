@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 from torchforge.extractor import extract_pdf
 from torchforge.models import ExtractionStatus

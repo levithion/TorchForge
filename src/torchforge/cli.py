@@ -8,7 +8,6 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
-from torchforge.extractor import extract_pdf
 from torchforge.compiler import (
     DEFAULT_CODE_CONTEXT,
     DEFAULT_CODE_MODEL,
@@ -18,6 +17,8 @@ from torchforge.compiler import (
     OllamaCodeCompiler,
     compile_artifact_directory,
 )
+from torchforge.extractor import extract_pdf
+from torchforge.validator import RuntimeValidationError, validate_artifact_directory
 from torchforge.vision_parser import (
     DEFAULT_OLLAMA_URL,
     DEFAULT_VISION_CONTEXT,
@@ -26,7 +27,6 @@ from torchforge.vision_parser import (
     VisionParserError,
     parse_artifact_directory,
 )
-from torchforge.validator import RuntimeValidationError, validate_artifact_directory
 from torchforge.watcher import watch_directory
 
 

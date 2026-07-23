@@ -5,8 +5,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -404,13 +404,12 @@ def compile_artifact_directory(
     destination = destination_root / f"{safe_name}.py"
     destination.write_text(source, encoding="utf-8")
 
+    architecture_profile = identify_architecture(topology)
     manifest.setdefault("artifacts", {})["generated_code"] = str(destination)
     manifest["compilation"] = {
         "model": compiler_name,
         "class_name": discovered_class,
-        "architecture_profile": (
-            identify_architecture(topology).key if identify_architecture(topology) else None
-        ),
+        "architecture_profile": architecture_profile.key if architecture_profile else None,
         "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
         "assumptions": response.assumptions,
     }

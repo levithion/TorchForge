@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
-
 from test_topology import valid_topology_payload
+
 from torchforge.compiler import (
     CompilationResponse,
     CompilerError,

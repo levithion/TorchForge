@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import logging
-from pathlib import Path
+import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Callable
 
-from watchdog.events import FileCreatedEvent, FileMovedEvent, FileSystemEventHandler
+from watchdog.events import (
+    DirCreatedEvent,
+    DirMovedEvent,
+    FileCreatedEvent,
+    FileMovedEvent,
+    FileSystemEventHandler,
+)
 from watchdog.observers.polling import PollingObserver
 
 from torchforge.extractor import ExtractionResult, extract_pdf, sha256_file
@@ -109,15 +116,16 @@ class PDFEventHandler(FileSystemEventHandler):
         self.processor = processor
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="torchforge")
 
-    def on_created(self, event: FileCreatedEvent) -> None:
+    def on_created(self, event: DirCreatedEvent | FileCreatedEvent) -> None:
         if not event.is_directory:
             self._submit(event.src_path)
 
-    def on_moved(self, event: FileMovedEvent) -> None:
+    def on_moved(self, event: DirMovedEvent | FileMovedEvent) -> None:
         if not event.is_directory:
             self._submit(event.dest_path)
 
-    def _submit(self, path: str) -> None:
+    def _submit(self, path: str | bytes) -> None:
+        path = os.fsdecode(path)
         if Path(path).suffix.lower() == ".pdf":
             self._executor.submit(self.processor.process_path, path)
 
