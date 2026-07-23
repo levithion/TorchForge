@@ -749,7 +749,12 @@ async def get_source_pdf(paper_id: str):
     source = _source_pdf(root, _read_json(root / "manifest.json"))
     if source is None:
         raise HTTPException(status_code=404, detail="Source PDF is not available.")
-    return FileResponse(source, media_type="application/pdf", filename=source.name)
+    return FileResponse(
+        source,
+        media_type="application/pdf",
+        filename=source.name,
+        content_disposition_type="inline",
+    )
 
 
 @app.get("/api/papers/{paper_id}/evidence")
@@ -758,9 +763,13 @@ async def get_evidence(paper_id: str) -> dict[str, Any]:
     manifest = _read_json(root / "manifest.json")
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
+    rendered_page_numbers: set[int] = set()
     for collection in ("rendered_pages", "embedded_images"):
         for item in manifest.get("artifacts", {}).get(collection, []):
             if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                continue
+            page_number = item.get("page")
+            if collection == "embedded_images" and page_number in rendered_page_numbers:
                 continue
             relative = item["path"]
             if relative in seen:
@@ -777,6 +786,8 @@ async def get_evidence(paper_id: str) -> dict[str, Any]:
                     "kind": "page" if collection == "rendered_pages" else "image",
                 }
             )
+            if collection == "rendered_pages" and isinstance(page_number, int):
+                rendered_page_numbers.add(page_number)
     return {
         "sourceAvailable": _source_pdf(root, manifest) is not None,
         "images": entries,
