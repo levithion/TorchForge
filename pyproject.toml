@@ -29,6 +29,9 @@ dev = [
 reference = [
     "transformers>=4.45,<5",
 ]
+export = [
+    "onnx>=1.17,<2",
+]
 
 [project.scripts]
 torchforge = "torchforge.cli:main"

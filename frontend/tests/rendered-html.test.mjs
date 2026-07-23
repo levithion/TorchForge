@@ -47,6 +47,12 @@ test("ships real pipeline interactions instead of starter UI", async () => {
   assert.match(app, /runStage/);
   assert.match(app, /openArtifact/);
   assert.match(app, /application\/pdf/);
+  assert.match(app, /ReactFlow/);
+  assert.match(app, /DiffEditor/);
+  assert.match(app, /\/api\/jobs/);
+  assert.match(app, /exports\/bundle/);
+  assert.match(app, /artifacts\/topology/);
+  assert.match(app, /multiple onChange/);
   assert.match(layout, /og\.png/);
   assert.match(packageJson, /"name": "torchforge-studio"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
