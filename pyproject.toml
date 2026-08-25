@@ -4,10 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "torchforge"
-version = "0.5.0"
+version = "1.0.0"
 description = "Local research-paper-to-PyTorch pipeline with a web workspace"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Shshank Singh" }]
+keywords = ["pytorch", "research", "papers", "deep-learning", "ollama"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "fastapi>=0.115,<1",
     "numpy>=1.26,<3",

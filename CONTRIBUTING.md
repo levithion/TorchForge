@@ -54,4 +54,4 @@ to validation, code generation, path handling, or process execution deserve
 extra scrutiny.
 
 By contributing, you agree that your contribution will be distributed under
-the repository's license.
+the repository's [Apache License 2.0](LICENSE).
