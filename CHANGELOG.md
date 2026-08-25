@@ -37,8 +37,6 @@ First open-source release under the Apache License 2.0.
   (`vite` 8.2.2, `@cloudflare/vite-plugin` 1.53.x, React 19.2.8, patched
   transitive pins); one unpatched build-time advisory is documented in
   `SECURITY.md`.
-- Architecture conformance dispatch now degrades gracefully instead of
-  raising for recognized-but-unimplemented profiles.
 
 ## [0.5.0]
 
