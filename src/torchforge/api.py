@@ -439,6 +439,7 @@ async def health() -> dict[str, Any]:
             "paperManagement": True,
             "bundleExport": True,
             "onnxExport": True,
+            "torchscriptExport": True,
         },
         "presets": {
             "fast": {
@@ -932,6 +933,45 @@ async def export_onnx(paper_id: str):
             detail=(
                 "ONNX export failed for this generated module. Install the optional "
                 f"ONNX dependencies and review dynamic inputs: {exc}"
+            ),
+        ) from exc
+    return FileResponse(
+        destination,
+        media_type="application/octet-stream",
+        filename=destination.name,
+    )
+
+
+@app.get("/api/papers/{paper_id}/exports/torchscript")
+async def export_torchscript(paper_id: str):
+    root = _paper_root(paper_id)
+    manifest = _read_json(root / "manifest.json")
+    try:
+        topology = _read_json(root / "topology.json")
+        class_name = manifest["compilation"]["class_name"]
+        code_path = Path(manifest["artifacts"]["generated_code"]).resolve()
+        model_class = _load_generated_class(code_path, class_name)
+        constructor_kwargs = infer_constructor_kwargs(model_class, topology)
+        model = model_class(**constructor_kwargs).cpu().eval()
+        inputs = _dummy_inputs(model, topology, constructor_kwargs, torch.device("cpu"))
+        destination = _output_root() / f"{paper_id}.torchscript.pt"
+        module: Any
+        try:
+            module = torch.jit.script(model)
+            module(*inputs)
+        except Exception:
+            # Scripting needs fully typed forward paths; tracing records the
+            # concrete control flow for the representative inputs instead.
+            example_input = tuple(inputs)
+            module = torch.jit.trace(model, example_input)
+            module(*example_input)
+        torch.jit.save(module, destination)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "TorchScript export failed for this generated module. Review "
+                f"dynamic inputs and control flow: {exc}"
             ),
         ) from exc
     return FileResponse(

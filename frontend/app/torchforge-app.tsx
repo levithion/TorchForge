@@ -39,6 +39,7 @@ import {
   Layers3,
   LoaderCircle,
   Menu,
+  Package,
   PanelLeftClose,
   Pencil,
   Play,
@@ -1058,6 +1059,12 @@ export function TorchForgeApp() {
                           onClick={() => download(`/api/papers/${encodeURIComponent(selected.id)}/exports/onnx`)}
                         >
                           <Boxes size={18} /><span><strong>ONNX model</strong><small>Portable runtime export</small></span>
+                        </button>
+                        <button
+                          disabled={!selected.stages.validate}
+                          onClick={() => download(`/api/papers/${encodeURIComponent(selected.id)}/exports/torchscript`)}
+                        >
+                          <Package size={18} /><span><strong>TorchScript module</strong><small>Scripted or traced export</small></span>
                         </button>
                       </div>
                     </section>

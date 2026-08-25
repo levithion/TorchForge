@@ -6,6 +6,7 @@ import time
 import zipfile
 from pathlib import Path
 
+import torch
 from fastapi.testclient import TestClient
 from test_compiler import VALID_CODE
 from test_topology import valid_topology_payload
@@ -189,6 +190,69 @@ def test_jobs_complete_and_bundle_export_contains_reproduction_file(
     with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
         assert "MODEL_CARD.md" in archive.namelist()
         assert "REPRODUCE.txt" in archive.namelist()
+
+
+def test_torchscript_export_returns_loaded_module(
+    sample_pdf: Path, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("TORCHFORGE_ROOT", str(tmp_path))
+    client = TestClient(app)
+    paper = _upload(client, sample_pdf)
+    paper_id = paper["id"]
+
+    topology_payload = {
+        "schema_version": "1.0",
+        "architecture_name": "Tiny Transformer",
+        "task": "demo",
+        "inputs": [{"name": "x", "shape": [None, 16, 8], "dtype": "float32"}],
+        "layers": [
+            {
+                "id": "projection",
+                "layer_type": "linear",
+                "inputs": ["x"],
+                "parameters": {"hidden_size": 8},
+                "confidence": 0.9,
+            }
+        ],
+        "connections": [],
+        "outputs": [{"name": "out", "shape": [None, 16, 8], "dtype": "float32"}],
+        "assumptions": [],
+        "source_images": [],
+        "overall_confidence": 0.9,
+    }
+    saved_topology = client.put(
+        f"/api/papers/{paper_id}/artifacts/topology", json=topology_payload
+    )
+    assert saved_topology.status_code == 200
+
+    output = tmp_path / "output_code" / f"{paper_id}.py"
+    output.parent.mkdir()
+    output.write_text(VALID_CODE, encoding="utf-8")
+    manifest_path = tmp_path / "temp_assets" / paper_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["generated_code"] = str(output)
+    manifest["compilation"] = {"class_name": "TinyTransformer"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    # Seed before the export request and before rebuilding the reference so
+    # both instantiate identical randomly initialized Linear weights.
+    namespace: dict[str, object] = {}
+    exec(compile(VALID_CODE, "<valid-code>", "exec"), namespace)
+    reference_class = namespace["TinyTransformer"]
+
+    torch.manual_seed(1234)
+    response = client.get(f"/api/papers/{paper_id}/exports/torchscript")
+    assert response.status_code == 200
+    destination = tmp_path / "output_code" / f"{paper_id}.torchscript.pt"
+    assert destination.is_file()
+
+    example = torch.randn(1, 16, 8)
+    with torch.no_grad():
+        actual = torch.jit.load(str(destination))(example)
+    torch.manual_seed(1234)
+    with torch.no_grad():
+        expected = reference_class()(example)
+    torch.testing.assert_close(actual, expected)
 
 
 def test_jobs_survive_backend_restart(sample_pdf: Path, tmp_path: Path, monkeypatch) -> None:
