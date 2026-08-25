@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import statistics
 import sys
+import time
 import traceback
 from enum import StrEnum
 from pathlib import Path
@@ -46,6 +48,100 @@ class ConformanceCheck(BaseModel):
     detail: str
 
 
+class PerformanceReport(BaseModel):
+    """Device-level runtime measurements for one validated module."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    latency_ms_mean: float
+    latency_ms_p50: float
+    latency_ms_p95: float
+    throughput_samples_per_sec: float
+    measured_forward_passes: int
+    peak_memory_bytes: int | None = None
+    estimated_flops: int | None = None
+
+
+_PERFORMANCE_WARMUP_PASSES = 2
+_PERFORMANCE_TIMED_PASSES = 8
+
+
+def _synchronize(device: torch.device) -> None:
+    if device.type == "mps":
+        torch.mps.synchronize()
+    elif device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def _peak_memory_bytes(device: torch.device) -> int | None:
+    try:
+        if device.type == "cuda":
+            return int(torch.cuda.max_memory_allocated(device))
+        if device.type == "mps" and hasattr(torch.mps, "current_allocated_memory"):
+            return int(torch.mps.current_allocated_memory())
+        if device.type == "cpu":
+            import resource
+
+            peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            # ru_maxrss is reported in bytes on macOS and kibibytes on Linux.
+            scale = 1 if sys.platform == "darwin" else 1024
+            return int(peak) * scale
+    except (AttributeError, RuntimeError, OSError, ImportError):
+        return None
+    return None
+
+
+def _estimate_flops(
+    model: nn.Module, inputs: list[torch.Tensor]
+) -> int | None:
+    try:
+        from torch.profiler import ProfilerActivity, profile
+
+        with profile(activities=[ProfilerActivity.CPU], with_flops=True) as profiler:
+            with torch.no_grad():
+                model(*inputs)
+        total = sum(event.flops for event in profiler.key_averages())
+        return int(total) if total > 0 else None
+    except Exception:
+        return None
+
+
+def _measure_performance(
+    model: nn.Module, inputs: list[torch.Tensor], device: torch.device
+) -> PerformanceReport:
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    batch_size = 1
+    for tensor in inputs:
+        if tensor.dim() >= 1:
+            batch_size = max(batch_size, int(tensor.shape[0]))
+            break
+    timings: list[float] = []
+    with torch.no_grad():
+        for _ in range(_PERFORMANCE_WARMUP_PASSES):
+            model(*inputs)
+        _synchronize(device)
+        for _ in range(_PERFORMANCE_TIMED_PASSES):
+            started = time.perf_counter()
+            model(*inputs)
+            _synchronize(device)
+            timings.append((time.perf_counter() - started) * 1000)
+    ordered = sorted(timings)
+    p95_index = min(len(ordered) - 1, max(0, round(0.95 * (len(ordered) - 1))))
+    total_seconds = sum(timings) / 1000
+    return PerformanceReport(
+        latency_ms_mean=statistics.fmean(timings),
+        latency_ms_p50=ordered[len(ordered) // 2],
+        latency_ms_p95=ordered[p95_index],
+        throughput_samples_per_sec=(
+            batch_size * len(timings) / total_seconds if total_seconds > 0 else 0.0
+        ),
+        measured_forward_passes=len(timings),
+        peak_memory_bytes=_peak_memory_bytes(device),
+        estimated_flops=_estimate_flops(model, inputs),
+    )
+
+
 class ValidationReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -58,6 +154,7 @@ class ValidationReport(BaseModel):
     architecture_profile: str | None = None
     conformance_checks: list[ConformanceCheck] = Field(default_factory=list)
     attempts: list[ValidationAttempt] = Field(default_factory=list)
+    performance: PerformanceReport | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -505,8 +602,8 @@ def run_forward_validation(
     topology: dict[str, Any],
     *,
     device_name: str = "auto",
-) -> tuple[dict[str, Any], list[list[int]], list[list[int]]]:
-    """Import, instantiate, and execute one generated module forward pass."""
+) -> tuple[dict[str, Any], list[list[int]], list[list[int]], PerformanceReport]:
+    """Import, instantiate, execute, and benchmark one generated module."""
 
     device = _select_device(device_name)
     model_class = _load_generated_class(code_path, class_name)
@@ -523,7 +620,13 @@ def run_forward_validation(
     output_shapes = _tensor_shapes(output)
     if not output_shapes:
         raise RuntimeValidationError("forward did not return a tensor or tensor collection.")
-    return constructor_kwargs, [list(tensor.shape) for tensor in inputs], output_shapes
+    performance = _measure_performance(model, inputs, device)
+    return (
+        constructor_kwargs,
+        [list(tensor.shape) for tensor in inputs],
+        output_shapes,
+        performance,
+    )
 
 
 def _run_complete_validation(
@@ -532,8 +635,14 @@ def _run_complete_validation(
     topology: dict[str, Any],
     *,
     device_name: str,
-) -> tuple[dict[str, Any], list[list[int]], list[list[int]], list[ConformanceCheck]]:
-    kwargs, input_shapes, output_shapes = run_forward_validation(
+) -> tuple[
+    dict[str, Any],
+    list[list[int]],
+    list[list[int]],
+    list[ConformanceCheck],
+    PerformanceReport,
+]:
+    kwargs, input_shapes, output_shapes, performance = run_forward_validation(
         code_path, class_name, topology, device_name=device_name
     )
     device = _select_device(device_name)
@@ -547,7 +656,7 @@ def _run_complete_validation(
         raise RuntimeValidationError(
             "Architecture conformance failed:\n- " + "\n- ".join(failures)
         )
-    return kwargs, input_shapes, output_shapes, checks
+    return kwargs, input_shapes, output_shapes, checks, performance
 
 
 def _write_report(root: Path, manifest: dict[str, Any], report: ValidationReport) -> None:
@@ -561,6 +670,18 @@ def _write_report(root: Path, manifest: dict[str, Any], report: ValidationReport
         "output_shapes": report.output_shapes,
         "architecture_profile": report.architecture_profile,
         "conformance_passed": all(check.passed for check in report.conformance_checks),
+        "performance": (
+            {
+                "latency_ms_p50": round(report.performance.latency_ms_p50, 3),
+                "throughput_samples_per_sec": round(
+                    report.performance.throughput_samples_per_sec, 3
+                ),
+                "estimated_flops": report.performance.estimated_flops,
+                "peak_memory_bytes": report.performance.peak_memory_bytes,
+            }
+            if report.performance is not None
+            else None
+        ),
     }
     (root / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -596,8 +717,10 @@ def validate_artifact_directory(
     engine = compiler or OllamaCodeCompiler()
     for attempt_number in range(1, max_repairs + 2):
         try:
-            kwargs, input_shapes, output_shapes, checks = _run_complete_validation(
-                code_path, class_name, topology, device_name=selected_device_name
+            kwargs, input_shapes, output_shapes, checks, performance = (
+                _run_complete_validation(
+                    code_path, class_name, topology, device_name=selected_device_name
+                )
             )
             attempts.append(
                 ValidationAttempt(
@@ -618,6 +741,7 @@ def validate_artifact_directory(
                 architecture_profile=architecture_profile_key,
                 conformance_checks=checks,
                 attempts=attempts,
+                performance=performance,
             )
             _write_report(root, manifest, report)
             return report

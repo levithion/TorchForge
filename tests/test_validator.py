@@ -112,13 +112,18 @@ def test_run_forward_validation_on_cpu(tmp_path: Path) -> None:
     code_path = tmp_path / "model.py"
     code_path.write_text(GOOD_CODE, encoding="utf-8")
 
-    kwargs, input_shapes, output_shapes = run_forward_validation(
+    kwargs, input_shapes, output_shapes, performance = run_forward_validation(
         code_path, "RuntimeModel", TOPOLOGY, device_name="cpu"
     )
 
     assert kwargs == {"input_size": 8, "hidden_size": 8}
     assert input_shapes == [[1, 16, 8]]
     assert output_shapes == [[1, 16, 8]]
+    assert performance.latency_ms_mean > 0
+    assert performance.latency_ms_p50 >= performance.latency_ms_mean * 0.1
+    assert performance.latency_ms_p95 >= performance.latency_ms_p50
+    assert performance.throughput_samples_per_sec > 0
+    assert performance.measured_forward_passes == 8
 
 
 def test_successful_validation_updates_manifest(tmp_path: Path) -> None:
@@ -135,6 +140,9 @@ def test_successful_validation_updates_manifest(tmp_path: Path) -> None:
     assert manifest["validation"]["status"] == "completed"
     assert manifest["validation"]["conformance_passed"] is True
     assert report.conformance_checks[0].name == "runtime.forward"
+    assert report.performance is not None
+    assert report.performance.latency_ms_mean > 0
+    assert manifest["validation"]["performance"]["latency_ms_p50"] > 0
 
 
 def test_toy_transformer_is_rejected_when_topology_claims_bert(tmp_path: Path) -> None:
