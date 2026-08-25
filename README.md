@@ -828,6 +828,4 @@ Useful contribution areas include:
 
 ## License
 
-No open-source license has been selected yet. Until a license is added, the
-repository remains **all rights reserved** and reuse is not automatically
-granted.
+TorchForge is released under the [Apache License 2.0](LICENSE).

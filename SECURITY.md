@@ -31,3 +31,13 @@ especially useful.
 TorchForge's AST validation is a correctness and risk-reduction layer, not a
 security sandbox. Run untrusted generated code inside an isolated account,
 container, or virtual machine.
+
+## Known accepted risks
+
+- `image-size` (a transitive dependency of the frontend build tool `vinext`)
+  has unpatched denial-of-service advisories in its ICNS/JXL/HEIF parsers
+  ([GHSA-w3rx-r6r6-pgpr](https://github.com/advisories/GHSA-w3rx-r6r6-pgpr),
+  [GHSA-5p2g-fcmc-qvqq](https://github.com/advisories/GHSA-5p2g-fcmc-qvqq)).
+  It runs at build time on local files inside this repository only, so the risk
+  is considered negligible. No patched upstream release exists yet; this will
+  be resolved when `vinext` or `image-size` ships a fix.
