@@ -99,6 +99,7 @@ torchforge CLI ────┘
 | Architecture | Topology | Code generation | Validation guarantee |
 |---|---|---|---|
 | **BERT Base encoder** | Certified profile | Deterministic reference implementation | Structural, semantic, gradient, device, parameter-count, and Hugging Face parity checks |
+| **GPT-2 Small decoder** | Certified profile | Deterministic reference implementation | Structural, causal-masking, gradient, parameter-count, and Hugging Face parity checks |
 | Other transformer/NLP papers | Ollama vision interpretation | Ollama code generation | Schema, confidence, static-source, and portable runtime checks |
 
 ### Certified BERT Base behavior
@@ -123,6 +124,28 @@ The optional reference suite maps the same weights into Hugging Face
 `BertModel` and TorchForge BERT, then compares masked and segmented forward
 outputs numerically.
 
+### Certified GPT-2 Small behavior
+
+When "Language Models are Unsupervised Multitask Learners" is identified
+unambiguously, TorchForge creates a complete GPT-2 Small topology instead of
+trusting a small vision model to reconstruct well-known details. The profile
+includes:
+
+- learned token and absolute-position embeddings (no embedding LayerNorm);
+- hidden size `768`, `12` decoder layers, `12` attention heads;
+- feed-forward width `3072` with the GELU tanh approximation;
+- pre-normalization residual blocks with causal attention;
+- LayerNorm epsilon `1e-5`;
+- the final hidden state after the closing LayerNorm;
+- exactly `124,439,808` parameters for the base decoder; and
+- a `load_huggingface_state_dict()` adapter that transposes Hugging Face
+  Conv1D weights.
+
+The optional reference suite transfers tiny-config weights into Hugging Face
+`GPT2Model` and TorchForge GPT-2 and compares causal forward outputs
+numerically. Runtime conformance additionally proves causality: changing the
+final input token must leave every earlier output position unchanged.
+
 ### Unknown architecture safety gate
 
 Unknown architectures remain model interpretations. TorchForge:
@@ -135,6 +158,17 @@ Unknown architectures remain model interpretations. TorchForge:
 
 This prevents a plausible-looking Python file from being treated as success when
 Phase 2 did not produce an implementation-ready graph.
+
+### Optional container isolation
+
+Generated modules are untrusted model output. Setting
+`TORCHFORGE_SANDBOX=docker` moves Phase 4 execution into a hardened container:
+no network, read-only filesystem, dropped capabilities, and bounded CPU and
+memory. The host consumes JSON results from the bundled runner instead of
+importing generated code. When Docker is unavailable, validation falls back to
+the in-process path and records a warning. Certified profiles run trusted,
+deterministic reference implementations, so the sandbox primarily protects the
+unknown-architecture path.
 
 ## Requirements
 
@@ -269,7 +303,8 @@ Open [http://localhost:3000](http://localhost:3000).
 The workspace supports:
 
 - multi-PDF drag-and-drop upload and batch pipeline queues;
-- live job progress, stage logs, cancellation, retry, and run-all actions;
+- live job progress over Server-Sent Events with polling fallback,
+  stage logs, cancellation, retry, and run-all actions;
 - editable topology graphs with layer, connection, shape, parameter, and
   confidence inspection;
 - side-by-side PDF and extracted-figure evidence;
@@ -280,8 +315,8 @@ The workspace supports:
   the browser;
 - paper rename, tags, archive, recoverable deletion, and duplicated runs;
 - cross-run provenance and generated-code comparison;
-- artifact ZIP, model-card, source, generated-code, and optional ONNX exports;
-  and
+- artifact ZIP, model-card, source, generated-code, ONNX, and TorchScript
+  exports; and
 - guided diagnostics for the TorchForge API, Ollama, and missing local models.
 
 ### Use a different backend URL
@@ -479,6 +514,10 @@ Implementation: [`src/torchforge/validator.py`](src/torchforge/validator.py)
 - captures complete tracebacks; and
 - can send bounded runtime feedback to Phase 3 for repair.
 
+Each report also includes a device-level performance summary: forward-pass
+latency (mean, p50, p95), throughput in samples per second, peak memory, and
+estimated FLOPs from `torch.profiler`.
+
 For BERT Base, Phase 4 additionally checks:
 
 - forward arguments;
@@ -497,6 +536,12 @@ For BERT Base, Phase 4 additionally checks:
 - finite outputs;
 - gradient flow; and
 - batch independence.
+
+For GPT-2 Small, the additional checks cover decoder depth, fused attention
+projections, head count and width, feed-forward width, the GELU tanh
+approximation, pre-normalization structure, LayerNorm epsilon, the exact
+`124,439,808` parameter count, the checkpoint adapter, output contract,
+finite outputs, gradient flow, causal masking, and batch independence.
 
 ## Artifacts and manifest
 
@@ -567,9 +612,14 @@ structural and reference claims are made only for certified profiles.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TORCHFORGE_ROOT` | Current working directory | Backend project and artifact root |
+| `TORCHFORGE_ROOT` | Current working directory | Backend project and artifact root; also locates the job database |
 | `TORCHFORGE_ALLOWED_ORIGINS` | Local frontend plus deployed Studio origin | Comma-separated API CORS origins |
 | `NEXT_PUBLIC_TORCHFORGE_API_URL` | `http://127.0.0.1:8000` | Frontend API base URL |
+| `TORCHFORGE_SANDBOX` | `off` | Set to `docker` to execute generated code in an isolated container |
+| `TORCHFORGE_SANDBOX_IMAGE` | `pytorch/pytorch:2.5.1-cpu` | Container image for sandboxed validation |
+| `TORCHFORGE_SANDBOX_MEMORY` | `4g` | Container memory limit |
+| `TORCHFORGE_SANDBOX_CPUS` | `2` | Container CPU limit |
+| `TORCHFORGE_SANDBOX_TIMEOUT` | `600` seconds | Wall-clock limit per sandboxed validation attempt |
 
 ### Important CLI defaults
 
@@ -613,7 +663,8 @@ The local FastAPI service exposes the frontend workflow.
 | `POST` | `/api/papers/{paper_id}/compile` | Run Phase 3 |
 | `POST` | `/api/papers/{paper_id}/validate` | Run Phase 4 |
 | `POST` | `/api/jobs` | Queue one or more configured pipelines |
-| `GET` | `/api/jobs` | Read live job progress and logs |
+| `GET` | `/api/jobs` | Read job history and progress (survives restarts) |
+| `GET` | `/api/jobs/stream` | Server-Sent Events feed of live job snapshots |
 | `DELETE` | `/api/jobs/{job_id}` | Request safe job cancellation |
 | `GET` | `/api/papers/{paper_id}/artifacts/{name}` | Read an allowed artifact |
 | `PUT` | `/api/papers/{paper_id}/artifacts/topology` | Validate and save topology edits |
@@ -621,12 +672,14 @@ The local FastAPI service exposes the frontend workflow.
 | `GET` | `/api/papers/{paper_id}/source` | Stream the managed source PDF |
 | `GET` | `/api/papers/{paper_id}/evidence` | List rendered pages and extracted figures |
 | `GET` | `/api/papers/{paper_id}/revisions` | List retained artifact revisions |
-| `GET` | `/api/papers/{paper_id}/exports/{format}` | Export bundle, model card, or ONNX |
+| `GET` | `/api/papers/{paper_id}/exports/{format}` | Export bundle, model card, ONNX, or TorchScript |
 
 Uploads are limited to 100 MiB. Filenames and artifact paths are normalized and
-checked to remain within configured project directories. Jobs are intentionally
-local and in-memory; cancellation stops before the next stage after the active
-local operation exits safely.
+checked to remain within configured project directories. Jobs are persisted in
+a local SQLite database (`torchforge.db`) with seven-day retention for
+finished runs; cancellation stops before the next stage after the active local
+operation exits safely. The SSE stream emits snapshots while work is active
+and closes shortly after all jobs settle; browsers reconnect automatically.
 
 ## Testing
 
@@ -659,14 +712,16 @@ The current suite covers:
 - Nougat success and fallback paths;
 - watcher stability and deduplication;
 - topology schema and confidence gates;
-- certified BERT topology normalization;
+- certified BERT and GPT-2 topology normalization;
 - Ollama request and error handling;
 - compiler AST validation;
 - low-confidence compilation blocking;
 - CPU/MPS/CUDA selection behavior;
-- forward outputs, gradient flow, repairs, and reports;
-- Hugging Face BERT numerical parity;
-- API behavior; and
+- forward outputs, gradient flow, repairs, reports, and performance metrics;
+- Hugging Face BERT and GPT-2 numerical parity;
+- job persistence across restarts and the SSE stream;
+- sandboxed execution protocol and in-process fallback; and
+- API behavior; plus
 - frontend server rendering and real pipeline interactions.
 
 GitHub Actions runs the Python/reference and frontend jobs on every push to
@@ -677,6 +732,7 @@ GitHub Actions runs the Python/reference and frontend jobs on every push to
 ```text
 TorchForge/
 ├── .github/workflows/ci.yml
+├── .github/workflows/release.yml
 ├── frontend/                   # TorchForge Studio
 │   ├── app/
 │   ├── public/
@@ -690,8 +746,11 @@ TorchForge/
 │   ├── cli.py
 │   ├── compiler.py
 │   ├── extractor.py
+│   ├── job_store.py            # SQLite persistence for pipeline jobs
 │   ├── models.py
 │   ├── nougat.py
+│   ├── sandbox.py              # optional Docker isolation for Phase 4
+│   ├── sandbox_runner.py       # in-container validation runner
 │   ├── topology.py
 │   ├── validator.py
 │   ├── vision_parser.py
@@ -784,7 +843,8 @@ Confirm `NEXT_PUBLIC_TORCHFORGE_API_URL` and
 
 - TorchForge targets transformer and NLP papers, not arbitrary neural
   architectures.
-- BERT Base is currently the only independently certified architecture profile.
+- BERT Base and GPT-2 Small are currently the only independently certified
+  architecture profiles.
 - Other architectures remain vision- and code-model interpretations.
 - Generated weights are random unless a compatible checkpoint is loaded.
 - Tokenizers, datasets, pretraining, and downstream fine-tuning are outside the
@@ -796,7 +856,9 @@ Confirm `NEXT_PUBLIC_TORCHFORGE_API_URL` and
 - Watcher deduplication is in-memory and resets with the process.
 - Nougat can be slow and may download model weights on first use.
 - Automatic repair remains model-generated code and requires review.
-- The runtime validator is not an operating-system security sandbox.
+- The in-process runtime validator is not an operating-system security sandbox;
+  enable `TORCHFORGE_SANDBOX=docker` for container isolation of Phase 4.
+- Sandboxed validation runs on CPU inside the container regardless of host GPU.
 
 ## Contributing
 
