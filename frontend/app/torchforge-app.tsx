@@ -174,6 +174,16 @@ type Evidence = {
   visionSources: string[];
 };
 
+type PerformanceMetrics = {
+  latency_ms_mean: number;
+  latency_ms_p50: number;
+  latency_ms_p95: number;
+  throughput_samples_per_sec: number;
+  measured_forward_passes: number;
+  peak_memory_bytes?: number | null;
+  estimated_flops?: number | null;
+};
+
 type ValidationDetail = {
   status: string;
   device: string;
@@ -184,6 +194,7 @@ type ValidationDetail = {
   architecture_profile?: string | null;
   conformance_checks?: { name: string; passed: boolean; detail: string }[];
   attempts?: { attempt: number; code_path: string; succeeded: boolean; error?: string | null }[];
+  performance?: PerformanceMetrics | null;
 };
 
 type Revision = { artifact: string; path: string; created_at: string };
@@ -275,6 +286,30 @@ function formatDuration(milliseconds: number | null): string {
 
 function formatShape(shape?: (number | null)[] | null): string {
   return shape ? `[${shape.map((value) => value ?? "?").join(", ")}]` : "shape unknown";
+}
+
+function formatBytes(bytes?: number | null): string {
+  if (!bytes || bytes <= 0) return "—";
+  const units = ["B", "KiB", "MiB", "GiB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function formatFlops(flops?: number | null): string {
+  if (!flops || flops <= 0) return "—";
+  const units = ["FLOPs", "KFLOPs", "MFLOPs", "GFLOPs", "TFLOPs"];
+  let value = flops;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
 
 function evidenceUrl(paperId: string, path: string): string {
@@ -1176,6 +1211,15 @@ export function TorchForgeApp() {
                           <div><span>Profile</span><strong>{validation.architecture_profile?.replaceAll("_", " ") || "Generic runtime"}</strong></div>
                           <div><span>Attempts</span><strong>{validation.attempts?.length || 0}</strong></div>
                         </div>
+                        {validation.performance && (
+                          <div className="validation-summary">
+                            <div><span>P50 latency</span><strong>{validation.performance.latency_ms_p50.toFixed(2)} ms</strong></div>
+                            <div><span>Mean / P95</span><strong>{validation.performance.latency_ms_mean.toFixed(2)} / {validation.performance.latency_ms_p95.toFixed(2)} ms</strong></div>
+                            <div><span>Throughput</span><strong>{validation.performance.throughput_samples_per_sec.toFixed(1)} samples/s</strong></div>
+                            <div><span>FLOPs (fwd)</span><strong>{formatFlops(validation.performance.estimated_flops)}</strong></div>
+                            <div><span>Peak memory</span><strong>{formatBytes(validation.performance.peak_memory_bytes)}</strong></div>
+                          </div>
+                        )}
                         <div className="validation-columns">
                           <section className="panel-card">
                             <div className="panel-title"><div><span className="eyebrow">CONFORMANCE</span><h3>Architecture checks</h3></div><Check size={18} /></div>
