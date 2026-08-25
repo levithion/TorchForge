@@ -19,6 +19,7 @@ from torch import nn
 
 from torchforge.architecture_profiles import ArchitectureProfile, identify_architecture
 from torchforge.compiler import OllamaCodeCompiler, compile_artifact_directory
+from torchforge.sandbox import docker_available, run_sandboxed_validation, sandbox_enabled
 
 
 class RuntimeValidationError(RuntimeError):
@@ -155,6 +156,7 @@ class ValidationReport(BaseModel):
     conformance_checks: list[ConformanceCheck] = Field(default_factory=list)
     attempts: list[ValidationAttempt] = Field(default_factory=list)
     performance: PerformanceReport | None = None
+    sandboxed: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -845,6 +847,52 @@ def _run_complete_validation(
     return kwargs, input_shapes, output_shapes, checks, performance
 
 
+def _run_sandboxed_attempt(
+    code_path: Path,
+    class_name: str,
+    topology_path: Path,
+) -> tuple[dict[str, Any], list[list[int]], list[list[int]], list[ConformanceCheck], PerformanceReport]:
+    """Validate one generated module inside an isolated container."""
+
+    payload = run_sandboxed_validation(code_path, class_name, topology_path)
+    if payload.get("status") != "completed":
+        error = payload.get("error") or "The sandboxed runner reported an unspecified failure."
+        raise RuntimeValidationError(error)
+    checks = [
+        _check(
+            "runtime.forward",
+            True,
+            "forward completed inside a network-isolated container",
+        ),
+        _check(
+            "runtime.finite_outputs",
+            bool(payload.get("finite_outputs")),
+            "all returned values are finite",
+        ),
+        _check(
+            "runtime.gradient_flow",
+            bool(payload.get("gradient_flow")),
+            "a backward pass produces finite trainable-parameter gradients",
+        ),
+    ]
+    latency = payload.get("latency_ms_mean")
+    performance = PerformanceReport(
+        latency_ms_mean=float(latency or 0.0),
+        latency_ms_p50=float(latency or 0.0),
+        latency_ms_p95=float(latency or 0.0),
+        throughput_samples_per_sec=float(payload.get("throughput_samples_per_sec") or 0.0),
+        measured_forward_passes=5,
+    )
+    constructor_kwargs = payload.get("constructor_kwargs")
+    return (
+        constructor_kwargs if isinstance(constructor_kwargs, dict) else {},
+        payload.get("input_shapes") or [],
+        payload.get("output_shapes") or [],
+        checks,
+        performance,
+    )
+
+
 def _write_report(root: Path, manifest: dict[str, Any], report: ValidationReport) -> None:
     report_path = root / "validation.json"
     report_path.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
@@ -898,16 +946,35 @@ def validate_artifact_directory(
     selected_device_name = selected_device.type
     architecture_profile = identify_architecture(topology)
     architecture_profile_key = architecture_profile.key if architecture_profile else None
+    sandbox_requested = sandbox_enabled()
+    sandbox_active = sandbox_requested and docker_available()
+    if sandbox_requested and not sandbox_active:
+        manifest.setdefault("warnings", []).append(
+            "TORCHFORGE_SANDBOX=docker was requested but no Docker daemon is "
+            "reachable; validation ran in-process."
+        )
 
     attempts: list[ValidationAttempt] = []
     engine = compiler or OllamaCodeCompiler()
+    device_name_for_report = selected_device_name
     for attempt_number in range(1, max_repairs + 2):
         try:
-            kwargs, input_shapes, output_shapes, checks, performance = (
-                _run_complete_validation(
-                    code_path, class_name, topology, device_name=selected_device_name
+            if sandbox_active:
+                kwargs, input_shapes, output_shapes, checks, performance = (
+                    _run_sandboxed_attempt(
+                        code_path,
+                        class_name,
+                        root / "topology.json",
+                    )
                 )
-            )
+                device_name_for_report = "cpu"
+            else:
+                kwargs, input_shapes, output_shapes, checks, performance = (
+                    _run_complete_validation(
+                        code_path, class_name, topology, device_name=selected_device_name
+                    )
+                )
+                device_name_for_report = selected_device_name
             attempts.append(
                 ValidationAttempt(
                     attempt=attempt_number, code_path=str(code_path), succeeded=True
@@ -919,7 +986,7 @@ def validate_artifact_directory(
                     if attempt_number == 1
                     else ValidationStatus.REPAIRED
                 ),
-                device=selected_device_name,
+                device=device_name_for_report,
                 class_name=class_name,
                 constructor_kwargs=kwargs,
                 input_shapes=input_shapes,
@@ -928,6 +995,7 @@ def validate_artifact_directory(
                 conformance_checks=checks,
                 attempts=attempts,
                 performance=performance,
+                sandboxed=sandbox_active,
             )
             _write_report(root, manifest, report)
             return report
@@ -944,10 +1012,11 @@ def validate_artifact_directory(
             if attempt_number > max_repairs:
                 report = ValidationReport(
                     status=ValidationStatus.FAILED,
-                    device=selected_device_name,
+                    device=device_name_for_report,
                     class_name=class_name,
                     architecture_profile=architecture_profile_key,
                     attempts=attempts,
+                    sandboxed=sandbox_active,
                 )
                 _write_report(root, manifest, report)
                 return report
@@ -968,10 +1037,11 @@ def validate_artifact_directory(
                 if attempt_number >= max_repairs:
                     report = ValidationReport(
                         status=ValidationStatus.FAILED,
-                        device=selected_device_name,
+                        device=device_name_for_report,
                         class_name=class_name,
                         architecture_profile=architecture_profile_key,
                         attempts=attempts,
+                        sandboxed=sandbox_active,
                     )
                     _write_report(root, manifest, report)
                     return report
