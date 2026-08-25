@@ -36,6 +36,7 @@ from torchforge.compiler import (
     validate_pytorch_source,
 )
 from torchforge.extractor import extract_pdf
+from torchforge.job_store import ACTIVE_STATUSES, JobStore
 from torchforge.topology import NetworkTopology
 from torchforge.validator import (
     RuntimeValidationError,
@@ -83,14 +84,24 @@ class PaperUpdate(BaseModel):
     archived: bool | None = None
 
 
-_jobs: dict[str, dict[str, Any]] = {}
-_job_cancellations: dict[str, threading.Event] = {}
-_job_lock = threading.Lock()
+_job_stores: dict[Path, JobStore] = {}
+_job_stores_lock = threading.Lock()
+_cancellation_events: dict[str, threading.Event] = {}
 
 
 def _project_root() -> Path:
     configured = os.environ.get("TORCHFORGE_ROOT")
     return Path(configured or Path.cwd()).expanduser().resolve()
+
+
+def _job_store() -> JobStore:
+    root = _project_root()
+    with _job_stores_lock:
+        store = _job_stores.get(root)
+        if store is None:
+            store = JobStore(root / "torchforge.db")
+            _job_stores[root] = store
+        return store
 
 
 def _assets_root() -> Path:
@@ -290,22 +301,18 @@ def _job_public(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _update_job(job_id: str, **values: Any) -> None:
-    with _job_lock:
-        if job_id in _jobs:
-            _jobs[job_id].update(values)
+    try:
+        _job_store().update(job_id, **values)
+    except ValueError:
+        pass
 
 
 def _append_job_log(job_id: str, message: str) -> None:
-    with _job_lock:
-        job = _jobs.get(job_id)
-        if job is None:
-            return
-        job["logs"].append({"time": _now(), "message": message})
-        job["logs"] = job["logs"][-200:]
+    _job_store().append_log(job_id, message, _now())
 
 
 def _run_job(job_id: str, paper_id: str, stages: list[StageName], options: StageOptions) -> None:
-    cancellation = _job_cancellations[job_id]
+    cancellation = _cancellation_events[job_id]
     started = time.perf_counter()
     _update_job(job_id, status="running", startedAt=_now())
     try:
@@ -333,8 +340,8 @@ def _run_job(job_id: str, paper_id: str, stages: list[StageName], options: Stage
             progress=100,
             finishedAt=_now(),
             durationMs=round((time.perf_counter() - started) * 1000),
-            paper=_paper_payload(root),
         )
+        _append_job_log(job_id, "Pipeline completed.")
     except Exception as exc:
         _append_job_log(job_id, str(exc))
         _update_job(
@@ -350,7 +357,7 @@ def _run_job(job_id: str, paper_id: str, stages: list[StageName], options: Stage
 def _create_job(paper_id: str, stages: list[StageName], options: StageOptions) -> dict[str, Any]:
     _paper_root(paper_id)
     job_id = uuid.uuid4().hex
-    job = {
+    record = {
         "id": job_id,
         "paperId": paper_id,
         "stages": stages,
@@ -365,25 +372,16 @@ def _create_job(paper_id: str, stages: list[StageName], options: StageOptions) -
         "durationMs": None,
         "options": options.model_dump(),
     }
-    with _job_lock:
-        _jobs[job_id] = job
-        _job_cancellations[job_id] = threading.Event()
-        if len(_jobs) > 200:
-            completed = [
-                key
-                for key, value in _jobs.items()
-                if value["status"] in {"completed", "failed", "cancelled"}
-            ]
-            for old_id in completed[: len(_jobs) - 200]:
-                _jobs.pop(old_id, None)
-                _job_cancellations.pop(old_id, None)
+    store = _job_store()
+    job = store.create(record)
+    _cancellation_events[job_id] = threading.Event()
     threading.Thread(
         target=_run_job,
         args=(job_id, paper_id, stages, options),
         daemon=True,
         name=f"torchforge-job-{job_id[:8]}",
     ).start()
-    return _job_public(job)
+    return job
 
 
 async def _run_stage(operation: Callable[[], Any]) -> Any:
@@ -393,7 +391,7 @@ async def _run_stage(operation: Callable[[], Any]) -> Any:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-app = FastAPI(title="TorchForge API", version="0.5.0")
+app = FastAPI(title="TorchForge API", version="1.0.0")
 origins = [
     value.strip()
     for value in os.environ.get(
@@ -434,6 +432,8 @@ async def health() -> dict[str, Any]:
         },
         "capabilities": {
             "jobs": True,
+            "jobStream": True,
+            "persistentJobs": True,
             "topologyEditing": True,
             "codeEditing": True,
             "paperManagement": True,
@@ -537,42 +537,76 @@ async def create_jobs(request: JobRequest) -> dict[str, Any]:
 
 @app.get("/api/jobs")
 async def list_jobs(paper_id: str | None = None) -> dict[str, Any]:
-    with _job_lock:
-        values = [
-            _job_public(job)
-            for job in _jobs.values()
-            if paper_id is None or job["paperId"] == paper_id
-        ]
-    return {"jobs": sorted(values, key=lambda job: job["createdAt"], reverse=True)}
+    jobs = await asyncio.to_thread(_job_store().list, paper_id)
+    return {"jobs": [_job_public(job) for job in jobs]}
+
+
+@app.get("/api/jobs/stream")
+async def stream_jobs() -> StreamingResponse:
+    """Server-Sent Events feed of job snapshots.
+
+    The stream closes shortly after all jobs reach a terminal state; browsers
+    reconnect automatically through EventSource. This keeps local resources
+    bounded without losing live updates while work is active.
+    """
+
+    async def generator():
+        last_payload: str | None = None
+        quiet_ticks = 0
+        silent_ticks = 0
+        while quiet_ticks < 2:
+            jobs = await asyncio.to_thread(_job_store().list)
+            payload = json.dumps([_job_public(job) for job in jobs], sort_keys=True)
+            active = any(job["status"] in ACTIVE_STATUSES for job in jobs)
+            if payload != last_payload:
+                last_payload = payload
+                yield f"data: {payload}\n\n"
+                silent_ticks = 0
+            if active:
+                quiet_ticks = 0
+                silent_ticks += 1
+                if silent_ticks >= 30:
+                    silent_ticks = 0
+                    yield ": keepalive\n\n"
+            else:
+                quiet_ticks += 1
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str) -> dict[str, Any]:
-    with _job_lock:
-        job = _jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="Job was not found.")
-        return _job_public(job)
+    job = await asyncio.to_thread(_job_store().get, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job was not found.")
+    return _job_public(job)
 
 
 @app.delete("/api/jobs/{job_id}")
 async def cancel_job(job_id: str) -> dict[str, Any]:
-    with _job_lock:
-        job = _jobs.get(job_id)
-        cancellation = _job_cancellations.get(job_id)
-        if job is None or cancellation is None:
-            raise HTTPException(status_code=404, detail="Job was not found.")
-        if job["status"] in {"completed", "failed", "cancelled"}:
-            return _job_public(job)
-        cancellation.set()
-        job["status"] = "cancelling"
-        job["logs"].append(
-            {
-                "time": _now(),
-                "message": "Cancellation requested; the active local operation will finish safely.",
-            }
-        )
+    store = _job_store()
+    job = await asyncio.to_thread(store.get, job_id)
+    cancellation = _cancellation_events.get(job_id)
+    if job is None or cancellation is None:
+        raise HTTPException(status_code=404, detail="Job was not found.")
+    if job["status"] in {"completed", "failed", "cancelled"}:
         return _job_public(job)
+    cancellation.set()
+    store.update(job_id, status="cancelling")
+    store.append_log(
+        job_id,
+        "Cancellation requested; the active local operation will finish safely.",
+        _now(),
+    )
+    updated = store.get(job_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Job was not found.")
+    return _job_public(updated)
 
 
 @app.post("/api/papers")

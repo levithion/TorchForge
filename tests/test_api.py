@@ -189,3 +189,52 @@ def test_jobs_complete_and_bundle_export_contains_reproduction_file(
     with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
         assert "MODEL_CARD.md" in archive.namelist()
         assert "REPRODUCE.txt" in archive.namelist()
+
+
+def test_jobs_survive_backend_restart(sample_pdf: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TORCHFORGE_ROOT", str(tmp_path))
+    monkeypatch.setattr("torchforge.api._run_configured_stage", lambda *_args: None)
+    client = TestClient(app)
+    paper = _upload(client, sample_pdf)
+    created = client.post("/api/jobs", json={"paper_ids": [paper["id"]], "stages": ["parse"]})
+    job_id = created.json()["jobs"][0]["id"]
+    for _ in range(100):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] == "completed":
+            break
+        time.sleep(0.01)
+
+    # Simulate a process restart: drop cached stores so a fresh JobStore opens
+    # the same database file, as a new backend process would.
+    monkeypatch.setattr("torchforge.api._job_stores", {})
+    restarted = client.get(f"/api/jobs/{job_id}")
+    assert restarted.status_code == 200
+    assert restarted.json()["status"] == "completed"
+    assert restarted.json()["stages"] == ["parse"]
+
+    listing = client.get("/api/jobs").json()["jobs"]
+    assert [entry["id"] for entry in listing] == [job_id]
+
+
+def test_job_stream_reports_snapshots_and_closes(
+    sample_pdf: Path, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("TORCHFORGE_ROOT", str(tmp_path))
+    monkeypatch.setattr("torchforge.api._run_configured_stage", lambda *_args: None)
+    client = TestClient(app)
+    paper = _upload(client, sample_pdf)
+    created = client.post("/api/jobs", json={"paper_ids": [paper["id"]], "stages": ["parse"]})
+    job_id = created.json()["jobs"][0]["id"]
+
+    frames: list[str] = []
+    with client.stream("GET", "/api/jobs/stream") as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        for line in response.iter_lines():
+            frames.append(line)
+            if f'"id":"{job_id}"' in line.replace(" ", "") and '"completed"' in line:
+                break
+
+    snapshots = "".join(frame for frame in frames if frame.startswith("data: "))
+    assert '"queued"' in snapshots or '"running"' in snapshots
+    assert '"completed"' in snapshots

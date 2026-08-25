@@ -378,21 +378,54 @@ export function TorchForgeApp() {
   }, [options]);
 
   useEffect(() => {
-    const timer = window.setInterval(async () => {
-      try {
-        const result = await api<{ jobs: Job[] }>("/api/jobs");
-        setJobs(result.jobs);
-        const newlyCompleted = result.jobs.filter(
-          (job) => job.status === "completed" && !completedJobs.current.has(job.id),
-        );
-        for (const job of newlyCompleted) completedJobs.current.add(job.id);
-        if (newlyCompleted.length) void refresh();
-      } catch {
-        // The health banner communicates a temporarily unavailable engine.
-      }
-    }, activeJobs.length ? 900 : 4000);
-    return () => window.clearInterval(timer);
-  }, [activeJobs.length, refresh]);
+    let source: EventSource | null = null;
+    let pollTimer: number | null = null;
+
+    const ingestJobs = (nextJobs: Job[]) => {
+      setJobs(nextJobs);
+      const newlyCompleted = nextJobs.filter(
+        (job) => job.status === "completed" && !completedJobs.current.has(job.id),
+      );
+      for (const job of newlyCompleted) completedJobs.current.add(job.id);
+      if (newlyCompleted.length) void refresh();
+    };
+
+    const startPollingFallback = () => {
+      if (pollTimer !== null) return;
+      const tick = async () => {
+        try {
+          const result = await api<{ jobs: Job[] }>("/api/jobs");
+          ingestJobs(result.jobs);
+        } catch {
+          // The health banner communicates a temporarily unavailable engine.
+        }
+      };
+      pollTimer = window.setInterval(tick, activeJobs.length ? 900 : 4000);
+    };
+
+    if (typeof window !== "undefined" && "EventSource" in window) {
+      source = new EventSource(`${apiBase()}/api/jobs/stream`);
+      source.onmessage = (event) => {
+        try {
+          ingestJobs(JSON.parse(event.data) as Job[]);
+        } catch {
+          // Ignore malformed frames; the next snapshot will catch up.
+        }
+      };
+      source.onerror = () => {
+        // The stream closes when all jobs settle and reconnects automatically;
+        // fall back to polling only if the engine is unreachable.
+        if (!engineOnline) startPollingFallback();
+      };
+    } else {
+      startPollingFallback();
+    }
+
+    return () => {
+      source?.close();
+      if (pollTimer !== null) window.clearInterval(pollTimer);
+    };
+  }, [activeJobs.length, engineOnline, refresh]);
 
   useEffect(() => {
     if (!notice) return;
