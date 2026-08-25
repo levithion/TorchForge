@@ -561,6 +561,190 @@ def _bert_conformance(
     return checks
 
 
+def _gpt2_inputs(device: torch.device, vocab_size: int) -> torch.Tensor:
+    return torch.randint(0, vocab_size, (2, 8), dtype=torch.long, device=device)
+
+
+def _gpt2_conformance(
+    model: nn.Module,
+    constructor_kwargs: dict[str, Any],
+    device: torch.device,
+) -> list[ConformanceCheck]:
+    """Validate GPT-2 Small structure and observable tensor semantics."""
+
+    blocks = list(getattr(model, "h", []))
+    embeddings = [module for module in model.modules() if isinstance(module, nn.Embedding)]
+    layer_norms = [module for module in model.modules() if isinstance(module, nn.LayerNorm)]
+    signature = inspect.signature(model.forward)
+    parameter_names = set(signature.parameters)
+
+    token_embedding = next((m for m in embeddings if m.num_embeddings > 1024), None)
+    position_embedding = next((m for m in embeddings if 256 <= m.num_embeddings <= 4096), None)
+
+    checks = [
+        _check(
+            "gpt2.forward_contract",
+            "input_ids" in parameter_names,
+            "forward accepts input_ids",
+        ),
+        _check(
+            "gpt2.embeddings",
+            token_embedding is not None
+            and token_embedding.num_embeddings == 50_257
+            and token_embedding.embedding_dim == 768
+            and position_embedding is not None
+            and position_embedding.num_embeddings == 1024,
+            "token (50,257 x 768) and learned position (1024 x 768) embeddings are present",
+        ),
+        _check(
+            "gpt2.decoder_depth",
+            len(blocks) == 12,
+            f"expected 12 decoder blocks, found {len(blocks)}",
+        ),
+        _check(
+            "gpt2.attention_shape",
+            bool(blocks)
+            and all(
+                getattr(block, "attn", None) is not None
+                and getattr(block.attn, "n_head", 0) == 12
+                and getattr(block.attn, "head_dim", 0) == 64
+                and getattr(block.attn.c_attn, "out_features", 0) == 3 * 768
+                for block in blocks
+            ),
+            "all decoder blocks use fused 2304-output projections with 12 heads of size 64",
+        ),
+        _check(
+            "gpt2.feed_forward",
+            bool(blocks)
+            and all(
+                getattr(block.mlp.c_fc, "out_features", 0) == 3072 for block in blocks
+            ),
+            "all decoder blocks use intermediate width 3072",
+        ),
+        _check(
+            "gpt2.activation",
+            bool(blocks)
+            and all(callable(getattr(block.mlp, "_gelu_new", None)) for block in blocks),
+            "all feed-forward blocks implement the GELU tanh approximation",
+        ),
+        _check(
+            "gpt2.layer_norm_epsilon",
+            bool(layer_norms)
+            and all(abs(float(module.eps) - 1e-5) < 1e-9 for module in layer_norms),
+            "all LayerNorm modules use epsilon 1e-5",
+        ),
+        _check(
+            "gpt2.pre_normalization",
+            bool(blocks)
+            and all(hasattr(block, "ln_1") and hasattr(block, "ln_2") for block in blocks)
+            and hasattr(model, "ln_f"),
+            "pre-normalization LayerNorms precede attention and feed-forward sub-blocks",
+        ),
+        _check(
+            "gpt2.parameter_count",
+            sum(parameter.numel() for parameter in model.parameters()) == 124_439_808,
+            "GPT-2 Small base decoder has exactly 124,439,808 parameters",
+        ),
+        _check(
+            "gpt2.checkpoint_adapter",
+            callable(getattr(model, "load_huggingface_state_dict", None)),
+            "a Hugging Face GPT2Model weight adapter is available",
+        ),
+    ]
+
+    if not checks[0].passed:
+        return checks
+
+    vocab_size = int(constructor_kwargs.get("vocab_size") or 50_257)
+    input_ids = _gpt2_inputs(device, min(vocab_size, 1_000))
+    with torch.no_grad():
+        output = model(input_ids=input_ids)
+    sequence = output.get("last_hidden_state") if isinstance(output, dict) else None
+    outputs_valid = isinstance(sequence, torch.Tensor) and tuple(sequence.shape) == (2, 8, 768)
+    checks.append(
+        _check(
+            "gpt2.outputs",
+            outputs_valid,
+            "returns last_hidden_state [batch, sequence, 768]",
+        )
+    )
+    finite = bool(
+        sequence is not None
+        and outputs_valid
+        and torch.isfinite(sequence).all().item()
+    )
+    checks.append(_check("runtime.finite_outputs", finite, "all returned values are finite"))
+
+    if sequence is not None:
+        model.zero_grad(set_to_none=True)
+        loss = sequence.float().square().mean()
+        loss.backward()
+        trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+        gradients_ok = bool(trainable) and any(
+            parameter.grad is not None and torch.isfinite(parameter.grad).all().item()
+            for parameter in trainable
+        )
+    else:
+        gradients_ok = False
+    checks.append(
+        _check(
+            "runtime.gradient_flow",
+            gradients_ok,
+            "a backward pass produces finite trainable-parameter gradients",
+        )
+    )
+
+    if sequence is not None:
+        probed = input_ids.clone()
+        # 503 never maps a value back to itself modulo 1000, so the probe
+        # token is guaranteed to differ from the original.
+        probed[:, -1] = (probed[:, -1] + 503) % 1000
+        with torch.no_grad():
+            probe_output = model(input_ids=probed)
+        probe_sequence = (
+            probe_output.get("last_hidden_state")
+            if isinstance(probe_output, dict)
+            else None
+        )
+        causal = bool(
+            isinstance(probe_sequence, torch.Tensor)
+            and torch.allclose(sequence[:, :-1], probe_sequence[:, :-1], atol=1e-5, rtol=1e-4)
+        )
+    else:
+        causal = False
+    checks.append(
+        _check(
+            "runtime.causal_masking",
+            causal,
+            "changing the final token leaves every earlier position unchanged",
+        )
+    )
+
+    if sequence is not None:
+        model.eval()
+        with torch.no_grad():
+            single_output = model(input_ids=input_ids[:1])
+        single_sequence = (
+            single_output.get("last_hidden_state")
+            if isinstance(single_output, dict)
+            else None
+        )
+        independent = bool(
+            isinstance(single_sequence, torch.Tensor)
+            and torch.allclose(sequence[:1], single_sequence, atol=2e-5, rtol=2e-4)
+        )
+    else:
+        independent = False
+    checks.append(
+        _check(
+            "runtime.batch_independence",
+            independent,
+            "one sample is unchanged when evaluated alone versus in a batch",
+        )
+    )
+    return checks
+
+
 def evaluate_architecture_conformance(
     model: nn.Module,
     profile: ArchitectureProfile | None,
@@ -577,6 +761,8 @@ def evaluate_architecture_conformance(
         ]
     if profile.key == "bert_base":
         return _bert_conformance(model, constructor_kwargs, device)
+    if profile.key == "gpt2_small":
+        return _gpt2_conformance(model, constructor_kwargs, device)
     raise RuntimeValidationError(f"Unsupported architecture profile: {profile.key}")
 
 

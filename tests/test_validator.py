@@ -178,6 +178,34 @@ class BERT(nn.Module):
     )
 
 
+def test_toy_decoder_is_rejected_when_topology_claims_gpt2(tmp_path: Path) -> None:
+    gpt2_code = """import torch
+from torch import nn
+
+class GPT2(nn.Module):
+    def __init__(self, vocab_size=50257):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, 32)
+        self.encoder = nn.TransformerEncoderLayer(32, 4, batch_first=True)
+
+    def forward(self, input_ids):
+        return self.encoder(self.embedding(input_ids))
+"""
+    root, output = _write_artifact(tmp_path, gpt2_code)
+    topology = dict(TOPOLOGY)
+    topology["architecture_name"] = "GPT-2"
+    (root / "topology.json").write_text(json.dumps(topology), encoding="utf-8")
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["compilation"]["class_name"] = "GPT2"
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    report = validate_artifact_directory(root, output, device_name="cpu", max_repairs=0)
+
+    assert report.status is ValidationStatus.FAILED
+    assert report.architecture_profile == "gpt2_small"
+    assert "Architecture conformance failed" in (report.attempts[0].error or "")
+
+
 def test_runtime_failure_is_recompiled_with_traceback(tmp_path: Path) -> None:
     root, output = _write_artifact(tmp_path, BAD_RUNTIME_CODE)
 
