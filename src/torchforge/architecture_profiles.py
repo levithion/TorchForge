@@ -621,7 +621,7 @@ class _GPT2MLP(nn.Module):
         )
 
     def forward(self, hidden_states):
-        return self.dropout(self.c_proj(self._gelu_new(self.c_fc(hidden_states))))
+        return self.dropout(self.c_proj(_GPT2MLP._gelu_new(self.c_fc(hidden_states))))
 
 
 class _GPT2Block(nn.Module):
