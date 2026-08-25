@@ -659,8 +659,7 @@ def _gpt2_conformance(
 
     vocab_size = int(constructor_kwargs.get("vocab_size") or 50_257)
     input_ids = _gpt2_inputs(device, min(vocab_size, 1_000))
-    with torch.no_grad():
-        output = model(input_ids=input_ids)
+    output = model(input_ids=input_ids)
     sequence = output.get("last_hidden_state") if isinstance(output, dict) else None
     outputs_valid = isinstance(sequence, torch.Tensor) and tuple(sequence.shape) == (2, 8, 768)
     checks.append(
