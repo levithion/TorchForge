@@ -20,3 +20,5 @@ output_code/*
 !output_code/.gitkeep
 temp_assets/*
 !temp_assets/.gitkeep
+torchforge.db
+torchforge.db-*
